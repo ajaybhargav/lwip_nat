@@ -650,6 +650,15 @@
 #endif
 
 /**
+ * IP_NAT==1: Enables Network address translation for packet routing between
+ * local and external interface. If you are going to run lwIP on a device with
+ * only one network interface, define this to 0.
+ */
+#if !defined IP_NAT || defined __DOXYGEN__
+#define IP_NAT                          0
+#endif
+
+/**
  * IP_REASSEMBLY==1: Reassemble incoming fragmented IP packets. Note that
  * this option does not affect outgoing packet sizes, which can be controlled
  * via IP_FRAG.
@@ -675,6 +684,8 @@
 #define IP_REASSEMBLY                   0
 #undef IP_FRAG
 #define IP_FRAG                         0
+#undef IP_NAT
+#define IP_NAT                          0
 #endif /* !LWIP_IPV4 */
 
 /**
