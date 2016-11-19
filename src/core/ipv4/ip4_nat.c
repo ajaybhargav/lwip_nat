@@ -86,7 +86,7 @@
  * IP4_ADDR(&new_nat_entry.source_net, 213, 129, 231, 168);
  * IP4_ADDR(&new_nat_entry.source_netmask, 255, 255, 255, 248);
  * IP4_ADDR(&new_nat_entry.dest_net, 10, 0, 0, 0);
- * IP4_ADDR(&new_nat_entry.source_netmask, 255, 0, 0, 0);
+ * IP4_ADDR(&new_nat_entry.dest_netmask, 255, 0, 0, 0);
  * ip4_nat_add(&new_nat_entry);
  */
 
