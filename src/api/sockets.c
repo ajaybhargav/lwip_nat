@@ -82,10 +82,10 @@
       (sin)->sin_len = sizeof(struct sockaddr_in); \
       (sin)->sin_family = AF_INET; \
       (sin)->sin_port = lwip_htons((port)); \
-      inet4_addr_from_ip4addr(&(sin)->sin_addr, ipaddr); \
+      inet_addr_from_ip4addr(&(sin)->sin_addr, ipaddr); \
       memset((sin)->sin_zero, 0, SIN_ZERO_LEN); }while(0)
 #define SOCKADDR4_TO_IP4ADDR_PORT(sin, ipaddr, port) do { \
-    inet4_addr_to_ip4addr(ip_2_ip4(ipaddr), &((sin)->sin_addr)); \
+    inet_addr_to_ip4addr(ip_2_ip4(ipaddr), &((sin)->sin_addr)); \
     (port) = lwip_ntohs((sin)->sin_port); }while(0)
 #endif /* LWIP_IPV4 */
 
@@ -482,7 +482,7 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 
   if (netconn_is_nonblocking(sock->conn) && (sock->rcvevent <= 0)) {
     LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_accept(%d): returning EWOULDBLOCK\n", s));
-    sock_set_errno(sock, EWOULDBLOCK);
+    set_errno(EWOULDBLOCK);
     return -1;
   }
 
@@ -771,7 +771,7 @@ lwip_recvfrom(int s, void *mem, size_t len, int flags,
           return off;
         }
         LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_recvfrom(%d): returning EWOULDBLOCK\n", s));
-        sock_set_errno(sock, EWOULDBLOCK);
+        set_errno(EWOULDBLOCK);
         return -1;
       }
 
@@ -1214,9 +1214,7 @@ lwip_socket(int domain, int type, int protocol)
   struct netconn *conn;
   int i;
 
-#if !LWIP_IPV6
   LWIP_UNUSED_ARG(domain); /* @todo: check this */
-#endif /* LWIP_IPV6 */
 
   /* create a netconn */
   switch (type) {
@@ -1279,7 +1277,7 @@ lwip_writev(int s, const struct iovec *iov, int iovcnt)
   msg.msg_namelen = 0;
   /* Hack: we have to cast via number to cast from 'const' pointer to non-const.
      Blame the opengroup standard for this inconsistency. */
-  msg.msg_iov = (struct iovec *)(size_t)iov;
+  msg.msg_iov = LWIP_CONST_CAST(struct iovec *, iov);
   msg.msg_iovlen = iovcnt;
   msg.msg_control = NULL;
   msg.msg_controllen = 0;
@@ -1745,7 +1743,6 @@ lwip_getaddrname(int s, struct sockaddr *name, socklen_t *namelen, u8_t local)
   }
 
   /* get the IP address and port */
-  /* @todo: this does not work for IPv6, yet */
   err = netconn_getaddr(sock->conn, &naddr, &port, local);
   if (err != ERR_OK) {
     sock_set_errno(sock, err_to_errno(err));
@@ -2046,7 +2043,7 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
       if (NETCONNTYPE_GROUP(netconn_type(sock->conn)) != NETCONN_UDP) {
         return ENOPROTOOPT;
       }
-      inet4_addr_from_ip4addr((struct in_addr*)optval, udp_get_multicast_netif_addr(sock->conn->pcb.udp));
+      inet_addr_from_ip4addr((struct in_addr*)optval, udp_get_multicast_netif_addr(sock->conn->pcb.udp));
       LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_getsockopt(%d, IPPROTO_IP, IP_MULTICAST_IF) = 0x%"X32_F"\n",
                   s, *(u32_t *)optval));
       break;
@@ -2074,6 +2071,9 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
   case IPPROTO_TCP:
     /* Special case: all IPPROTO_TCP option take an int */
     LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, *optlen, int, NETCONN_TCP);
+    if (sock->conn->pcb.tcp->state == LISTEN) {
+      return EINVAL;
+    }
     switch (optname) {
     case TCP_NODELAY:
       *(int*)optval = tcp_nagle_disabled(sock->conn->pcb.tcp);
@@ -2118,10 +2118,6 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
     switch (optname) {
     case IPV6_V6ONLY:
       LWIP_SOCKOPT_CHECK_OPTLEN_CONN(sock, *optlen, int);
-      /* @todo: this does not work for datagram sockets, yet */
-      if (NETCONNTYPE_GROUP(netconn_type(sock->conn)) != NETCONN_TCP) {
-        return ENOPROTOOPT;
-      }
       *(int*)optval = (netconn_get_ipv6only(sock->conn) ? 1 : 0);
       LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_getsockopt(%d, IPPROTO_IPV6, IPV6_V6ONLY) = %d\n",
                   s, *(int *)optval));
@@ -2410,7 +2406,7 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
       {
         ip4_addr_t if_addr;
         LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, optlen, struct in_addr, NETCONN_UDP);
-        inet4_addr_to_ip4addr(&if_addr, (const struct in_addr*)optval);
+        inet_addr_to_ip4addr(&if_addr, (const struct in_addr*)optval);
         udp_set_multicast_netif_addr(sock->conn->pcb.udp, &if_addr);
       }
       break;
@@ -2434,8 +2430,8 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
         ip4_addr_t if_addr;
         ip4_addr_t multi_addr;
         LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, optlen, struct ip_mreq, NETCONN_UDP);
-        inet4_addr_to_ip4addr(&if_addr, &imr->imr_interface);
-        inet4_addr_to_ip4addr(&multi_addr, &imr->imr_multiaddr);
+        inet_addr_to_ip4addr(&if_addr, &imr->imr_interface);
+        inet_addr_to_ip4addr(&multi_addr, &imr->imr_multiaddr);
         if (optname == IP_ADD_MEMBERSHIP) {
           if (!lwip_socket_register_membership(s, &if_addr, &multi_addr)) {
             /* cannot track membership (out of memory) */
@@ -2467,6 +2463,9 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
   case IPPROTO_TCP:
     /* Special case: all IPPROTO_TCP option take an int */
     LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, optlen, int, NETCONN_TCP);
+    if (sock->conn->pcb.tcp->state == LISTEN) {
+      return EINVAL;
+    }
     switch (optname) {
     case TCP_NODELAY:
       if (*(const int*)optval) {
@@ -2514,7 +2513,6 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
   case IPPROTO_IPV6:
     switch (optname) {
     case IPV6_V6ONLY:
-      /* @todo: this does not work for datagram sockets, yet */
       LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, optlen, int, NETCONN_TCP);
       if (*(const int*)optval) {
         netconn_set_ipv6only(sock->conn, 1);

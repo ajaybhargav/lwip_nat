@@ -47,6 +47,29 @@
 
 #include "arch/cc.h"
 
+/**
+ * @defgroup compiler_abstraction Compiler/platform abstraction
+ * @ingroup sys_layer
+ * All defines related to this section must not be placed in lwipopts.h,
+ * but in arch/cc.h!
+ * @{
+ */
+
+/** Define this to 1 in arch/cc.h of your port if you do not want to
+ * include stddef.h header to get size_t. This cannot be \#defined in
+ * lwipopts.h since this is not an option of lwIP itself, but an option
+ * of the lwIP port to your system.
+ * Additionally, this header is meant to be \#included in lwipopts.h
+ * (you may need to declare function prototypes in there).
+ */
+#ifndef LWIP_NO_STDDEF_H
+#define LWIP_NO_STDDEF_H 0
+#endif
+
+#if !LWIP_NO_STDDEF_H
+#include <stddef.h> /* for size_t */
+#endif
+
 /** Define this to 1 in arch/cc.h of your port if your compiler does not provide
  * the stdint.h header. This cannot be \#defined in lwipopts.h since
  * this is not an option of lwIP itself, but an option of the lwIP port
@@ -110,13 +133,30 @@ typedef uintptr_t mem_ptr_t;
 #endif
 #endif
 
+/** C++ const_cast<target_type>(val) equivalent to remove constness from a value */
+#ifndef LWIP_CONST_CAST
+#define LWIP_CONST_CAST(target_type, val) ((target_type)((ptrdiff_t)val))
+#endif
+
+/** Get rid of alignment cast warnings (GCC -Wcast-align) */
+#ifndef LWIP_ALIGNMENT_CAST
+#define LWIP_ALIGNMENT_CAST(target_type, val) LWIP_CONST_CAST(target_type, val)
+#endif
+
+/** Get rid of warnings related to pointer-to-numeric and vice-versa casts,
+ * e.g. "conversion from 'u8_t' to 'void *' of greater size"
+ */
+#ifndef LWIP_PTR_NUMERIC_CAST
+#define LWIP_PTR_NUMERIC_CAST(target_type, val) LWIP_CONST_CAST(target_type, val)
+#endif
+
 /** Allocates a memory buffer of specified size that is of sufficient size to align
  * its start address using LWIP_MEM_ALIGN.
  * You can declare your own version here e.g. to enforce alignment without adding
  * trailing padding bytes (see LWIP_MEM_ALIGN_BUFFER) or your own section placement
  * requirements.
  * e.g. if you use gcc and need 32 bit alignment:
- * \#define LWIP_DECLARE_MEMORY_ALIGNED(variable_name, size) u8_t variable_name[size] __attribute__((aligned(4)))
+ * \#define LWIP_DECLARE_MEMORY_ALIGNED(variable_name, size) u8_t variable_name[size] \_\_attribute\_\_((aligned(4)))
  * or more portable:
  * \#define LWIP_DECLARE_MEMORY_ALIGNED(variable_name, size) u32_t variable_name[(size + sizeof(u32_t) - 1) / sizeof(u32_t)]
  */
@@ -151,39 +191,69 @@ typedef uintptr_t mem_ptr_t;
 extern "C" {
 #endif
 
+/** Packed structs support.
+  * Placed BEFORE declaration of a packed struct. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: Nothing to do.
+  */
 #ifndef PACK_STRUCT_BEGIN
 #define PACK_STRUCT_BEGIN
 #endif /* PACK_STRUCT_BEGIN */
 
+/** Packed structs support.
+  * Placed AFTER declaration of a packed struct. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: Nothing to do.
+  */
 #ifndef PACK_STRUCT_END
 #define PACK_STRUCT_END
 #endif /* PACK_STRUCT_END */
 
+/** Packed structs support.
+  * Placed between end of declaration of a packed struct and trailing semicolon. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: \#define PACK_STRUCT_STRUCT \_\_attribute\_\_((packed))
+  */
 #ifndef PACK_STRUCT_STRUCT
 #define PACK_STRUCT_STRUCT
 #endif /* PACK_STRUCT_STRUCT */
 
+/** Packed structs support.
+  * Wraps u32_t and u16_t members. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: Nothing to do.
+  */
 #ifndef PACK_STRUCT_FIELD
 #define PACK_STRUCT_FIELD(x) x
 #endif /* PACK_STRUCT_FIELD */
 
-/* Used for struct fields of u8_t,
- * where some compilers warn that packing is not necessary */
+/** Packed structs support.
+  * Wraps u8_t members, where some compilers warn that packing is not necessary. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: Nothing to do.
+  */
 #ifndef PACK_STRUCT_FLD_8
 #define PACK_STRUCT_FLD_8(x) PACK_STRUCT_FIELD(x)
 #endif /* PACK_STRUCT_FLD_8 */
 
-/* Used for struct fields of that are packed structs themself,
- * where some compilers warn that packing is not necessary */
+/** Packed structs support.
+  * Wraps members that are packed structs themselves, where some compilers warn that packing is not necessary. \n
+  * For examples of packed struct declarations, see include/lwip/prot/ subfolder. \n
+  * Porting to GCC/clang: Nothing to do.
+  */
 #ifndef PACK_STRUCT_FLD_S
 #define PACK_STRUCT_FLD_S(x) PACK_STRUCT_FIELD(x)
 #endif /* PACK_STRUCT_FLD_S */
 
 
+/** Eliminates compiler warning about unused arguments. */
 #ifndef LWIP_UNUSED_ARG
 #define LWIP_UNUSED_ARG(x) (void)x
 #endif /* LWIP_UNUSED_ARG */
 
+/**
+ * @}
+ */
 
 #ifdef __cplusplus
 }
