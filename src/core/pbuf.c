@@ -350,8 +350,18 @@ pbuf_alloc(pbuf_layer layer, u16_t length, pbuf_type type)
 
     break;
   case PBUF_RAM:
-    /* If pbuf is to be allocated in RAM, allocate memory for it. */
-    p = (struct pbuf*)mem_malloc(LWIP_MEM_ALIGN_SIZE(SIZEOF_STRUCT_PBUF + offset) + LWIP_MEM_ALIGN_SIZE(length));
+    {
+      mem_size_t alloc_len = LWIP_MEM_ALIGN_SIZE(SIZEOF_STRUCT_PBUF + offset) + LWIP_MEM_ALIGN_SIZE(length);
+      
+      /* bug #50040: Check for integer overflow when calculating alloc_len */
+      if (alloc_len < LWIP_MEM_ALIGN_SIZE(length)) {
+        return NULL;
+      }
+    
+      /* If pbuf is to be allocated in RAM, allocate memory for it. */
+      p = (struct pbuf*)mem_malloc(alloc_len);
+    }
+
     if (p == NULL) {
       return NULL;
     }
@@ -1119,7 +1129,8 @@ pbuf_skip_const(const struct pbuf* in, u16_t in_offset, u16_t* out_offset)
 struct pbuf*
 pbuf_skip(struct pbuf* in, u16_t in_offset, u16_t* out_offset)
 {
-  return LWIP_CONST_CAST(struct pbuf*, pbuf_skip_const(in, in_offset, out_offset));
+  const struct pbuf* out = pbuf_skip_const(in, in_offset, out_offset);
+  return LWIP_CONST_CAST(struct pbuf*, out);
 }
 
 /**

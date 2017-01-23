@@ -562,6 +562,13 @@ pcb_new(struct api_msg *msg)
   case NETCONN_RAW:
     msg->conn->pcb.raw = raw_new_ip_type(iptype, msg->msg.n.proto);
     if (msg->conn->pcb.raw != NULL) {
+#if LWIP_IPV6
+      /* ICMPv6 packets should always have checksum calculated by the stack as per RFC 3542 chapter 3.1 */
+      if (NETCONNTYPE_ISIPV6(msg->conn->type) && msg->conn->pcb.raw->protocol == IP6_NEXTH_ICMP6) {
+        msg->conn->pcb.raw->chksum_reqd = 1;
+        msg->conn->pcb.raw->chksum_offset = 2;
+      }
+#endif /* LWIP_IPV6 */
       raw_recv(msg->conn->pcb.raw, recv_raw, msg->conn);
     }
     break;
@@ -1307,6 +1314,13 @@ lwip_netconn_do_listen(void *m)
             /* connection is not closed, cannot listen */
             msg->err = ERR_VAL;
           } else {
+            err_t err;
+            u8_t backlog;
+#if TCP_LISTEN_BACKLOG
+            backlog = msg->msg.lb.backlog;
+#else  /* TCP_LISTEN_BACKLOG */
+            backlog = TCP_DEFAULT_LISTEN_BACKLOG;
+#endif /* TCP_LISTEN_BACKLOG */
 #if LWIP_IPV4 && LWIP_IPV6
             /* "Socket API like" dual-stack support: If IP to listen to is IP6_ADDR_ANY,
              * and NETCONN_FLAG_IPV6_V6ONLY is NOT set, use IP_ANY_TYPE to listen
@@ -1319,15 +1333,11 @@ lwip_netconn_do_listen(void *m)
             }
 #endif /* LWIP_IPV4 && LWIP_IPV6 */
 
-#if TCP_LISTEN_BACKLOG
-            lpcb = tcp_listen_with_backlog(msg->conn->pcb.tcp, msg->msg.lb.backlog);
-#else  /* TCP_LISTEN_BACKLOG */
-            lpcb = tcp_listen(msg->conn->pcb.tcp);
-#endif /* TCP_LISTEN_BACKLOG */
+            lpcb = tcp_listen_with_backlog_and_err(msg->conn->pcb.tcp, backlog, &err);
 
             if (lpcb == NULL) {
               /* in this case, the old pcb is still allocated */
-              msg->err = ERR_MEM;
+              msg->err = err;
             } else {
               /* delete the recvmbox and allocate the acceptmbox */
               if (sys_mbox_valid(&msg->conn->recvmbox)) {

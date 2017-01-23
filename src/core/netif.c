@@ -65,6 +65,7 @@
 #include "lwip/stats.h"
 #include "lwip/sys.h"
 #include "lwip/ip.h"
+#include "lwip/if.h"
 #if ENABLE_LOOPBACK
 #if LWIP_NETIF_LOOPBACK_MULTITHREADING
 #include "lwip/tcpip.h"
@@ -260,6 +261,10 @@ netif_add(struct netif *netif,
   for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
     ip_addr_set_zero_ip6(&netif->ip6_addr[i]);
     netif->ip6_addr_state[i] = IP6_ADDR_INVALID;
+#if LWIP_IPV6_ADDRESS_LIFETIMES
+    netif->ip6_addr_valid_life[i] = IP6_ADDR_LIFE_STATIC;
+    netif->ip6_addr_pref_life[i] = IP6_ADDR_LIFE_STATIC;
+#endif /* LWIP_IPV6_ADDRESS_LIFETIMES */
   }
   netif->output_ip6 = netif_null_output_ip6;
 #endif /* LWIP_IPV6 */
@@ -310,6 +315,11 @@ netif_add(struct netif *netif,
   if (init(netif) != ERR_OK) {
     return NULL;
   }
+
+  /* check that netif_num has not overflowed or that init callback
+  provided a valid number (we don't support 255 since that can't be
+  converted to an index) */
+  LWIP_ASSERT("Netif num overflow/invalid num", netif->num < 255);
 
   /* add this netif to the list */
   netif->next = netif_list;
@@ -1123,9 +1133,9 @@ netif_ip6_addr_set_state(struct netif* netif, s8_t addr_idx, u8_t state)
       /* @todo: add mib2 ip6 entries? */
       netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV6);
     }
-    if ((old_state & IP6_ADDR_PREFERRED) != (state & IP6_ADDR_PREFERRED)) {
-      /* address state has changed (valid flag changed or switched between
-         preferred and deprecated) -> call the callback function */
+    if ((old_state & ~IP6_ADDR_TENTATIVE_COUNT_MASK) !=
+        (state     & ~IP6_ADDR_TENTATIVE_COUNT_MASK)) {
+      /* address state has changed -> call the callback function */
       NETIF_STATUS_CALLBACK(netif);
     }
   }
@@ -1136,8 +1146,9 @@ netif_ip6_addr_set_state(struct netif* netif, s8_t addr_idx, u8_t state)
 }
 
 /**
- * Checks if a specific address is assigned to the netif and returns its
- * index.
+ * Checks if a specific local address is present on the netif and returns its
+ * index. Depending on its state, it may or may not be assigned to the
+ * interface (as per RFC terminology).
  *
  * @param netif the netif to check
  * @param ip6addr the IPv6 address to find
@@ -1263,3 +1274,52 @@ netif_null_output_ip6(struct netif *netif, struct pbuf *p, const ip6_addr_t *ipa
   return ERR_IF;
 }
 #endif /* LWIP_IPV6 */
+
+/**
+* @ingroup netif_if
+* Return the interface index for the netif with name
+* or 0 (invalid interface) if not found/on error
+*
+* @param name the name of the netif
+*/
+u8_t
+netif_name_to_index(const char *name)
+{
+  struct netif *netif = netif_find(name);
+  if (netif != NULL) {
+    return netif_num_to_index(netif);
+  }
+  /* No name found, return invalid index */
+  return 0;
+}
+
+/**
+* @ingroup netif_if
+* Return the interface name for the netif matching index
+* or NULL if not found/on error
+*
+* @param index the interface index of the netif
+* @param name char buffer of at least IF_NAMESIZE bytes
+*/
+char *
+netif_index_to_name(u8_t index, char *name)
+{
+  struct netif *curif = netif_list;
+  u8_t num;
+  if (index == 0) {
+    return NULL; /* indexes start at 1 */
+  }
+  num = netif_index_to_num(index);
+
+  /* find netif from num */
+  while (curif != NULL) {
+    if (curif->num == num) {
+      name[0] = curif->name[0];
+      name[1] = curif->name[1];
+      lwip_itoa(&name[2], IF_NAMESIZE - 2, num);
+      return name;
+    }
+    curif = curif->next;
+  }
+  return NULL;
+}

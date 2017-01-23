@@ -1,7 +1,9 @@
+/**
+ * @file
+ * This file is a posix wrapper for lwip/if.h.
+ */
+
 /*
- * Copyright (c) 2001-2003 Swedish Institute of Computer Science.
- * All rights reserved. 
- * 
  * Redistribution and use in source and binary forms, with or without modification, 
  * are permitted provided that the following conditions are met:
  *
@@ -25,17 +27,7 @@
  * OF SUCH DAMAGE.
  *
  * This file is part of the lwIP TCP/IP stack.
- * 
- * Author: Adam Dunkels <adam@sics.se>
  *
  */
-#ifndef LWIP_FSDATA_H
-#define LWIP_FSDATA_H
 
-#include "lwip/apps/httpd_opts.h"
-#include "lwip/apps/fs.h"
-
-/* THIS FILE IS DEPRECATED AND WILL BE REMOVED IN THE FUTURE */
-/* content was moved to fs.h to simplify #include structure */
-
-#endif /* LWIP_FSDATA_H */
+#include "lwip/if.h"

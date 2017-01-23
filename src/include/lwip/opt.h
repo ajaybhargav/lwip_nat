@@ -144,6 +144,15 @@
 #if !defined SMEMCPY || defined __DOXYGEN__
 #define SMEMCPY(dst,src,len)            memcpy(dst,src,len)
 #endif
+
+/**
+ * MEMMOVE: override this if you have a faster implementation at hand than the
+ * one included in your C library.  lwIP currently uses MEMMOVE only when IPv6
+ * fragmentation support is enabled.
+ */
+#if !defined MEMMOVE || defined __DOXYGEN__
+#define MEMMOVE(dst,src,len)            memmove(dst,src,len)
+#endif
 /**
  * @}
  */
@@ -2210,6 +2219,17 @@
 #endif
 
 /**
+ * LWIP_IPV6_ADDRESS_LIFETIMES==1: Keep valid and preferred lifetimes for each
+ * IPv6 address. Required for LWIP_IPV6_AUTOCONFIG. May still be enabled
+ * otherwise, in which case the application may assign address lifetimes with
+ * the appropriate macros. Addresses with no lifetime are assumed to be static.
+ * If this option is disabled, all addresses are assumed to be static.
+ */
+#if !defined LWIP_IPV6_ADDRESS_LIFETIMES || defined __DOXYGEN__
+#define LWIP_IPV6_ADDRESS_LIFETIMES     (LWIP_IPV6_AUTOCONFIG)
+#endif
+
+/**
  * LWIP_IPV6_DUP_DETECT_ATTEMPTS=[0..7]: Number of duplicate address detection attempts.
  */
 #if !defined LWIP_IPV6_DUP_DETECT_ATTEMPTS || defined __DOXYGEN__
@@ -2605,7 +2625,7 @@
    ---------------------------------------
 */
 /**
- * @defgroup lwip_opts_debugmsg Debugging
+ * @defgroup lwip_opts_debugmsg Debug messages
  * @ingroup lwip_opts_debug
  * @{
  */
@@ -2613,6 +2633,7 @@
  * LWIP_DBG_MIN_LEVEL: After masking, the value of the debug is
  * compared against this value. If it is smaller, then debugging
  * messages are written.
+ * @see debugging_levels
  */
 #if !defined LWIP_DBG_MIN_LEVEL || defined __DOXYGEN__
 #define LWIP_DBG_MIN_LEVEL              LWIP_DBG_LEVEL_ALL
@@ -2621,6 +2642,7 @@
 /**
  * LWIP_DBG_TYPES_ON: A mask that can be used to globally enable/disable
  * debug messages of certain types.
+ * @see debugging_levels
  */
 #if !defined LWIP_DBG_TYPES_ON || defined __DOXYGEN__
 #define LWIP_DBG_TYPES_ON               LWIP_DBG_ON

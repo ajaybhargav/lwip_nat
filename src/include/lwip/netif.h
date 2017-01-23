@@ -238,6 +238,13 @@ struct netif {
   /** The state of each IPv6 address (Tentative, Preferred, etc).
    * @see ip6_addr.h */
   u8_t ip6_addr_state[LWIP_IPV6_NUM_ADDRESSES];
+#if LWIP_IPV6_ADDRESS_LIFETIMES
+  /** Remaining valid and preferred lifetime of each IPv6 address, in seconds.
+   * For valid lifetimes, the special value of IP6_ADDR_LIFE_STATIC (0)
+   * indicates the address is static and has no lifetimes. */
+  u32_t ip6_addr_valid_life[LWIP_IPV6_NUM_ADDRESSES];
+  u32_t ip6_addr_pref_life[LWIP_IPV6_NUM_ADDRESSES];
+#endif /* LWIP_IPV6_ADDRESS_LIFETIMES */
 #endif /* LWIP_IPV6 */
   /** This function is called by the network device driver
    *  to pass a packet up the TCP/IP stack. */
@@ -280,14 +287,6 @@ struct netif {
 #ifdef netif_get_client_data
   void* client_data[LWIP_NETIF_CLIENT_DATA_INDEX_MAX + LWIP_NUM_NETIF_CLIENT_DATA];
 #endif
-#if LWIP_IPV6_AUTOCONFIG
-  /** is this netif enabled for IPv6 autoconfiguration */
-  u8_t ip6_autoconfig_enabled;
-#endif /* LWIP_IPV6_AUTOCONFIG */
-#if LWIP_IPV6_SEND_ROUTER_SOLICIT
-  /** Number of Router Solicitation messages that remain to be sent. */
-  u8_t rs_count;
-#endif /* LWIP_IPV6_SEND_ROUTER_SOLICIT */
 #if LWIP_NETIF_HOSTNAME
   /* the hostname for this netif, NULL is a valid value */
   const char*  hostname;
@@ -297,16 +296,26 @@ struct netif {
 #endif /* LWIP_CHECKSUM_CTRL_PER_NETIF*/
   /** maximum transfer unit (in bytes) */
   u16_t mtu;
+  /** link level hardware address of this interface */
+  /* Ensure hwaddr is 16-bit aligned by placing it behind u16_t value
+   * because it is accessed via ETHADDR16_COPY() macro in etharp.c and autoip.c */
+  u8_t hwaddr[NETIF_MAX_HWADDR_LEN];
   /** number of bytes used in hwaddr */
   u8_t hwaddr_len;
-  /** link level hardware address of this interface */
-  u8_t hwaddr[NETIF_MAX_HWADDR_LEN];
   /** flags (@see @ref netif_flags) */
   u8_t flags;
   /** descriptive abbreviation */
   char name[2];
   /** number of this interface */
   u8_t num;
+#if LWIP_IPV6_AUTOCONFIG
+  /** is this netif enabled for IPv6 autoconfiguration */
+  u8_t ip6_autoconfig_enabled;
+#endif /* LWIP_IPV6_AUTOCONFIG */
+#if LWIP_IPV6_SEND_ROUTER_SOLICIT
+  /** Number of Router Solicitation messages that remain to be sent. */
+  u8_t rs_count;
+#endif /* LWIP_IPV6_SEND_ROUTER_SOLICIT */
 #if MIB2_STATS
   /** link type (from "snmp_ifType" enum from snmp_mib2.h) */
   u8_t link_type;
@@ -459,6 +468,20 @@ s8_t netif_get_ip6_addr_match(struct netif *netif, const ip6_addr_t *ip6addr);
 void netif_create_ip6_linklocal_address(struct netif *netif, u8_t from_mac_48bit);
 err_t netif_add_ip6_address(struct netif *netif, const ip6_addr_t *ip6addr, s8_t *chosen_idx);
 #define netif_set_ip6_autoconfig_enabled(netif, action) do { if(netif) { (netif)->ip6_autoconfig_enabled = (action); }}while(0)
+#if LWIP_IPV6_ADDRESS_LIFETIMES
+#define netif_ip6_addr_valid_life(netif, i)  \
+    (((netif) != NULL) ? ((netif)->ip6_addr_valid_life[i]) : IP6_ADDR_LIFE_STATIC)
+#define netif_ip6_addr_set_valid_life(netif, i, secs) \
+    do { if (netif != NULL) { (netif)->ip6_addr_valid_life[i] = (secs); }} while (0)
+#define netif_ip6_addr_pref_life(netif, i)  \
+    (((netif) != NULL) ? ((netif)->ip6_addr_pref_life[i]) : IP6_ADDR_LIFE_STATIC)
+#define netif_ip6_addr_set_pref_life(netif, i, secs) \
+    do { if (netif != NULL) { (netif)->ip6_addr_pref_life[i] = (secs); }} while (0)
+#define netif_ip6_addr_isstatic(netif, i)  \
+    (netif_ip6_addr_valid_life((netif), (i)) == IP6_ADDR_LIFE_STATIC)
+#else /* !LWIP_IPV6_ADDRESS_LIFETIMES */
+#define netif_ip6_addr_isstatic(netif, i)  (1) /* all addresses are static */
+#endif /* !LWIP_IPV6_ADDRESS_LIFETIMES */
 #endif /* LWIP_IPV6 */
 
 #if LWIP_NETIF_HWADDRHINT
@@ -466,6 +489,14 @@ err_t netif_add_ip6_address(struct netif *netif, const ip6_addr_t *ip6addr, s8_t
 #else /* LWIP_NETIF_HWADDRHINT */
 #define NETIF_SET_HWADDRHINT(netif, hint)
 #endif /* LWIP_NETIF_HWADDRHINT */
+
+/* @ingroup netif */
+u8_t netif_name_to_index(const char *name);
+char * netif_index_to_name(u8_t index, char *name);
+
+/* Interface indexes always start at 1 per RFC 3493, section 4, num starts at 0 */
+#define netif_num_to_index(netif)   ((netif)->num + 1)
+#define netif_index_to_num(index)   ((index) - 1)
 
 #ifdef __cplusplus
 }
