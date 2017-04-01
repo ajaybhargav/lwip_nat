@@ -55,6 +55,22 @@ extern "C" {
 #define LWIP_SUPPORT_CUSTOM_PBUF ((IP_FRAG && !LWIP_NETIF_TX_SINGLE_PBUF) || (LWIP_IPV6 && LWIP_IPV6_FRAG))
 #endif
 
+/** PBUF_NEEDS_COPY(p): return a boolean value indicating whether the given
+ * pbuf needs to be copied in order to be kept around beyond the current call
+ * stack without risking being corrupted. The default setting provides safety:
+ * it will make a copy iof any pbuf chain that does not consist entirely of
+ * PBUF_ROM type pbufs. For setups with zero-copy support, it may be redefined
+ * to evaluate to true in all cases, for example. However, doing so also has an
+ * effect on the application side: any buffers that are *not* copied must also
+ * *not* be reused by the application after passing them to lwIP. For example,
+ * when setting PBUF_NEEDS_COPY to (0), after using udp_send() with a PBUF_RAM
+ * pbuf, the application must free the pbuf immediately, rather than reusing it
+ * for other purposes. For more background information on this, see tasks #6735
+ * and #7896, and bugs #11400 and #49914. */
+#ifndef PBUF_NEEDS_COPY
+#define PBUF_NEEDS_COPY(p)  ((p)->type != PBUF_ROM)
+#endif /* PBUF_NEEDS_COPY */
+
 /* @todo: We need a mechanism to prevent wasting memory in every pbuf
    (TCP vs. UDP, IPv4 vs. IPv6: UDP/IPv4 packets may waste up to 28 bytes) */
 
@@ -169,7 +185,10 @@ struct pbuf {
    * that refer to this pbuf. This can be pointers from an application,
    * the stack itself, or pbuf->next pointers from a chain.
    */
-  u16_t ref;
+  LWIP_PBUF_REF_T ref;
+
+  /** For incoming packets, this contains the input netif's index */
+  u8_t if_idx;
 };
 
 
@@ -229,6 +248,7 @@ struct pbuf *pbuf_alloced_custom(pbuf_layer l, u16_t length, pbuf_type type,
 void pbuf_realloc(struct pbuf *p, u16_t size);
 u8_t pbuf_header(struct pbuf *p, s16_t header_size);
 u8_t pbuf_header_force(struct pbuf *p, s16_t header_size);
+struct pbuf *pbuf_free_header(struct pbuf *q, u16_t size);
 void pbuf_ref(struct pbuf *p);
 u8_t pbuf_free(struct pbuf *p);
 u16_t pbuf_clen(const struct pbuf *p);
@@ -237,6 +257,7 @@ void pbuf_chain(struct pbuf *head, struct pbuf *tail);
 struct pbuf *pbuf_dechain(struct pbuf *p);
 err_t pbuf_copy(struct pbuf *p_to, const struct pbuf *p_from);
 u16_t pbuf_copy_partial(const struct pbuf *p, void *dataptr, u16_t len, u16_t offset);
+void *pbuf_get_contiguous(const struct pbuf *p, void *buffer, size_t bufsize, u16_t len, u16_t offset);
 err_t pbuf_take(struct pbuf *buf, const void *dataptr, u16_t len);
 err_t pbuf_take_at(struct pbuf *buf, const void *dataptr, u16_t len, u16_t offset);
 struct pbuf *pbuf_skip(struct pbuf* in, u16_t in_offset, u16_t* out_offset);

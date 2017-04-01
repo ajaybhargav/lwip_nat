@@ -95,8 +95,8 @@ PACK_STRUCT_END
 #if (!LWIP_UDP && LWIP_DHCP)
   #error "If you want to use DHCP, you have to define LWIP_UDP=1 in your lwipopts.h"
 #endif
-#if (!LWIP_UDP && LWIP_MULTICAST_TX_OPTIONS)
-  #error "If you want to use IGMP/LWIP_MULTICAST_TX_OPTIONS, you have to define LWIP_UDP=1 in your lwipopts.h"
+#if (!LWIP_UDP && !LWIP_RAW && LWIP_MULTICAST_TX_OPTIONS)
+  #error "If you want to use LWIP_MULTICAST_TX_OPTIONS, you have to define LWIP_UDP=1 and/or LWIP_RAW=1 in your lwipopts.h"
 #endif
 #if (!LWIP_UDP && LWIP_DNS)
   #error "If you want to use DNS, you have to define LWIP_UDP=1 in your lwipopts.h"
@@ -122,9 +122,6 @@ PACK_STRUCT_END
 #endif
 #if (LWIP_IGMP && !LWIP_IPV4)
   #error "IGMP needs LWIP_IPV4 enabled in your lwipopts.h"
-#endif
-#if (LWIP_MULTICAST_TX_OPTIONS && !LWIP_IPV4)
-  #error "LWIP_MULTICAST_TX_OPTIONS needs LWIP_IPV4 enabled in your lwipopts.h"
 #endif
 #if ((LWIP_NETCONN || LWIP_SOCKET) && (MEMP_NUM_TCPIP_MSG_API<=0))
   #error "If you want to use Sequential API, you have to define MEMP_NUM_TCPIP_MSG_API>=1 in your lwipopts.h"
@@ -217,9 +214,6 @@ PACK_STRUCT_END
 #endif
 #if !LWIP_ETHERNET && (LWIP_ARP || PPPOE_SUPPORT)
   #error "LWIP_ETHERNET needs to be turned on for LWIP_ARP or PPPOE_SUPPORT"
-#endif
-#if (LWIP_IGMP || LWIP_IPV6) && !defined(LWIP_RAND)
-  #error "When using IGMP or IPv6, LWIP_RAND() needs to be defined to a random-function returning an u32_t random value (in arch/cc.h)"
 #endif
 #if LWIP_TCPIP_CORE_LOCKING_INPUT && !LWIP_TCPIP_CORE_LOCKING
   #error "When using LWIP_TCPIP_CORE_LOCKING_INPUT, LWIP_TCPIP_CORE_LOCKING must be enabled, too"
@@ -340,7 +334,7 @@ void
 lwip_init(void)
 {
 #ifndef LWIP_SKIP_CONST_CHECK
-  int a;
+  int a = 0;
   LWIP_UNUSED_ARG(a);
   LWIP_ASSERT("LWIP_CONST_CAST not implemented correctly. Check your lwIP port.", LWIP_CONST_CAST(void*, &a) == &a);
 #endif

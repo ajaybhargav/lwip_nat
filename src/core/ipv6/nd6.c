@@ -64,6 +64,10 @@
 
 #include <string.h>
 
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
+
 #if LWIP_IPV6_DUP_DETECT_ATTEMPTS > IP6_ADDR_TENTATIVE_COUNT_MASK
 #error LWIP_IPV6_DUP_DETECT_ATTEMPTS > IP6_ADDR_TENTATIVE_COUNT_MASK
 #endif
@@ -85,8 +89,16 @@ static u8_t nd6_cached_destination_index;
 /* Multicast address holder. */
 static ip6_addr_t multicast_address;
 
-/* Static buffer to parse RA packet options (size of a prefix option, biggest option) */
-static u8_t nd6_ra_buffer[sizeof(struct prefix_option)];
+/* Static buffer to parse RA packet options */
+union ra_options {
+  struct lladdr_option  lladdr;
+  struct mtu_option     mtu;
+  struct prefix_option  prefix;
+#if LWIP_ND6_RDNSS_MAX_DNS_SERVERS
+  struct rdnss_option   rdnss;
+#endif
+};
+static union ra_options nd6_ra_buffer;
 
 /* Forward declarations. */
 static s8_t nd6_find_neighbor_cache_entry(const ip6_addr_t *ip6addr);
@@ -238,6 +250,7 @@ nd6_process_autoconfig_prefix(struct netif *netif,
    * already did exist, resulting in that address being given lifetimes. */
   IP6_ADDR(&ip6addr, prefix_addr->addr[0], prefix_addr->addr[1],
     netif_ip6_addr(netif, 0)->addr[2], netif_ip6_addr(netif, 0)->addr[3]);
+  ip6_addr_assign_zone(&ip6addr, IP6_UNICAST, netif);
 
   free_idx = 0;
   for (i = 1; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
@@ -294,8 +307,9 @@ nd6_input(struct pbuf *p, struct netif *inp)
 
     na_hdr = (struct na_header *)p->payload;
 
-    /* Create an aligned copy of the target address. */
-    ip6_addr_set(&target_address, &(na_hdr->target_address));
+    /* Create an aligned, zoned copy of the target address. */
+    ip6_addr_copy_from_packed(target_address, na_hdr->target_address);
+    ip6_addr_assign_zone(&target_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 7.1.2 requirements. */
     if (IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM || na_hdr->code != 0 ||
@@ -424,8 +438,9 @@ nd6_input(struct pbuf *p, struct netif *inp)
 
     ns_hdr = (struct ns_header *)p->payload;
 
-    /* Create an aligned copy of the target address. */
-    ip6_addr_set(&target_address, &(ns_hdr->target_address));
+    /* Create an aligned, zoned copy of the target address. */
+    ip6_addr_copy_from_packed(target_address, ns_hdr->target_address);
+    ip6_addr_assign_zone(&target_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 7.1.1 requirements. */
     if (IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM || ns_hdr->code != 0 ||
@@ -538,7 +553,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     u8_t *buffer; /* Used to copy options. */
     u16_t offset;
 #if LWIP_ND6_RDNSS_MAX_DNS_SERVERS
-    /* There can by multiple RDNSS options per RA */
+    /* There can be multiple RDNSS options per RA */
     u8_t rdnss_server_idx = 0;
 #endif /* LWIP_ND6_RDNSS_MAX_DNS_SERVERS */
 
@@ -610,30 +625,44 @@ nd6_input(struct pbuf *p, struct netif *inp)
     offset = sizeof(struct ra_header);
 
     /* Process each option. */
-    while ((p->tot_len - offset) > 0) {
+    while ((p->tot_len - offset) >= 2) {
+      u8_t option_type;
+      u16_t option_len;
+      int option_len8 = pbuf_try_get_at(p, offset + 1);
+      if (option_len8 <= 0) {
+        /* read beyond end or zero length */
+        goto lenerr_drop_free_return;
+      }
+      option_len = ((u8_t)option_len8) << 3;
+      if (option_len > p->tot_len - offset) {
+        /* short packet (option does not fit in) */
+        goto lenerr_drop_free_return;
+      }
       if (p->len == p->tot_len) {
         /* no need to copy from contiguous pbuf */
         buffer = &((u8_t*)p->payload)[offset];
       } else {
-        buffer = nd6_ra_buffer;
-        if (pbuf_copy_partial(p, buffer, sizeof(struct prefix_option), offset) != sizeof(struct prefix_option)) {
-          pbuf_free(p);
-          ND6_STATS_INC(nd6.lenerr);
-          ND6_STATS_INC(nd6.drop);
-          return;
+        /* check if this option fits into our buffer */
+        if (option_len > sizeof(nd6_ra_buffer)) {
+          option_type = pbuf_get_at(p, offset);
+          /* invalid option length */
+          if (option_type != ND6_OPTION_TYPE_RDNSS) {
+            goto lenerr_drop_free_return;
+          }
+          /* we allow RDNSS option to be longer - we'll just drop some servers */
+          option_len = sizeof(nd6_ra_buffer);
         }
+        buffer = (u8_t*)&nd6_ra_buffer;
+        option_len = pbuf_copy_partial(p, &nd6_ra_buffer, option_len, offset);
       }
-      if (buffer[1] == 0) {
-        /* zero-length extension. drop packet */
-        pbuf_free(p);
-        ND6_STATS_INC(nd6.lenerr);
-        ND6_STATS_INC(nd6.drop);
-        return;
-      }
-      switch (buffer[0]) {
+      option_type = buffer[0];
+      switch (option_type) {
       case ND6_OPTION_TYPE_SOURCE_LLADDR:
       {
         struct lladdr_option *lladdr_opt;
+        if (option_len < sizeof(struct lladdr_option)) {
+          goto lenerr_drop_free_return;
+        }
         lladdr_opt = (struct lladdr_option *)buffer;
         if ((default_router_list[i].neighbor_entry != NULL) &&
             (default_router_list[i].neighbor_entry->state == ND6_INCOMPLETE)) {
@@ -646,6 +675,9 @@ nd6_input(struct pbuf *p, struct netif *inp)
       case ND6_OPTION_TYPE_MTU:
       {
         struct mtu_option *mtu_opt;
+        if (option_len < sizeof(struct mtu_option)) {
+          goto lenerr_drop_free_return;
+        }
         mtu_opt = (struct mtu_option *)buffer;
         if (lwip_htonl(mtu_opt->mtu) >= 1280) {
 #if LWIP_ND6_ALLOW_RA_UPDATES
@@ -658,11 +690,15 @@ nd6_input(struct pbuf *p, struct netif *inp)
       {
         struct prefix_option *prefix_opt;
         ip6_addr_t prefix_addr;
+        if (option_len < sizeof(struct prefix_option)) {
+          goto lenerr_drop_free_return;
+        }
 
         prefix_opt = (struct prefix_option *)buffer;
 
         /* Get a memory-aligned copy of the prefix. */
-        ip6_addr_set(&prefix_addr, &(prefix_opt->prefix));
+        ip6_addr_copy_from_packed(prefix_addr, prefix_opt->prefix);
+        ip6_addr_assign_zone(&prefix_addr, IP6_UNICAST, inp);
 
         if (!ip6_addr_islinklocal(&prefix_addr)) {
           if ((prefix_opt->flags & ND6_PREFIX_FLAG_ON_LINK) &&
@@ -703,26 +739,33 @@ nd6_input(struct pbuf *p, struct netif *inp)
       case ND6_OPTION_TYPE_RDNSS:
       {
         u8_t num, n;
+        u16_t copy_offset = offset + SIZEOF_RDNSS_OPTION_BASE;
         struct rdnss_option * rdnss_opt;
+        if (option_len < SIZEOF_RDNSS_OPTION_BASE) {
+          goto lenerr_drop_free_return;
+        }
 
         rdnss_opt = (struct rdnss_option *)buffer;
         num = (rdnss_opt->length - 1) / 2;
         for (n = 0; (rdnss_server_idx < DNS_MAX_SERVERS) && (n < num); n++) {
           ip_addr_t rdnss_address;
 
-          /* Get a memory-aligned copy of the prefix. */
-          ip_addr_copy_from_ip6(rdnss_address, rdnss_opt->rdnss_address[n]);
+          /* Copy directly from pbuf to get an aligned, zoned copy of the prefix. */
+          if (pbuf_copy_partial(p, &rdnss_address, sizeof(ip6_addr_p_t), copy_offset) == sizeof(ip6_addr_p_t)) {
+            IP_SET_TYPE_VAL(rdnss_address, IPADDR_TYPE_V6);
+            ip6_addr_assign_zone(ip_2_ip6(&rdnss_address), IP6_UNKNOWN, inp);
 
-          if (htonl(rdnss_opt->lifetime) > 0) {
-            /* TODO implement Lifetime > 0 */
-            dns_setserver(rdnss_server_idx++, &rdnss_address);
-          } else {
-            /* TODO implement DNS removal in dns.c */
-            u8_t s;
-            for (s = 0; s < DNS_MAX_SERVERS; s++) {
-              const ip_addr_t *addr = dns_getserver(s);
-              if(ip_addr_cmp(addr, &rdnss_address)) {
-                dns_setserver(s, NULL);
+            if (htonl(rdnss_opt->lifetime) > 0) {
+              /* TODO implement Lifetime > 0 */
+              dns_setserver(rdnss_server_idx++, &rdnss_address);
+            } else {
+              /* TODO implement DNS removal in dns.c */
+              u8_t s;
+              for (s = 0; s < DNS_MAX_SERVERS; s++) {
+                const ip_addr_t *addr = dns_getserver(s);
+                if(ip_addr_cmp(addr, &rdnss_address)) {
+                  dns_setserver(s, NULL);
+                }
               }
             }
           }
@@ -736,7 +779,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
         break;
       }
       /* option length is checked earlier to be non-zero to make sure loop ends */
-      offset += 8 * ((u16_t)buffer[1]);
+      offset += 8 * (u8_t)option_len8;
     }
 
     break; /* ICMP6_TYPE_RA */
@@ -758,8 +801,9 @@ nd6_input(struct pbuf *p, struct netif *inp)
 
     redir_hdr = (struct redirect_header *)p->payload;
 
-    /* Copy original destination address, to have an aligned copy. */
-    ip6_addr_set(&destination_address, &(redir_hdr->destination_address));
+    /* Create an aligned, zoned copy of the destination address. */
+    ip6_addr_copy_from_packed(destination_address, redir_hdr->destination_address);
+    ip6_addr_assign_zone(&destination_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 8.1 requirements. */
     if (!ip6_addr_islinklocal(ip6_current_src_addr()) ||
@@ -792,22 +836,23 @@ nd6_input(struct pbuf *p, struct netif *inp)
       return;
     }
 
+    /* Create an aligned, zoned copy of the target address. */
+    ip6_addr_copy_from_packed(target_address, redir_hdr->target_address);
+    ip6_addr_assign_zone(&target_address, IP6_UNICAST, inp);
+
     /* Set the new target address. */
-    ip6_addr_set(&(destination_cache[i].next_hop_addr), &(redir_hdr->target_address));
+    ip6_addr_copy(destination_cache[i].next_hop_addr, target_address);
 
     /* If Link-layer address of other router is given, try to add to neighbor cache. */
     if (lladdr_opt != NULL) {
       if (lladdr_opt->type == ND6_OPTION_TYPE_TARGET_LLADDR) {
-        /* Copy target address to current source address, to have an aligned copy. */
-        ip6_addr_set(&target_address, &(redir_hdr->target_address));
-
         i = nd6_find_neighbor_cache_entry(&target_address);
         if (i < 0) {
           i = nd6_new_neighbor_cache_entry();
           if (i >= 0) {
             neighbor_cache[i].netif = inp;
             MEMCPY(neighbor_cache[i].lladdr, lladdr_opt->addr, inp->hwaddr_len);
-            ip6_addr_set(&(neighbor_cache[i].next_hop_address), &target_address);
+            ip6_addr_copy(neighbor_cache[i].next_hop_address, target_address);
 
             /* Receiving a message does not prove reachability: only in one direction.
              * Delay probe in case we get confirmation of reachability from upper layer (TCP). */
@@ -833,7 +878,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     struct icmp6_hdr *icmp6hdr; /* Packet too big message */
     struct ip6_hdr *ip6hdr; /* IPv6 header of the packet which caused the error */
     u32_t pmtu;
-    ip6_addr_t tmp;
+    ip6_addr_t destination_address;
 
     /* Check that ICMPv6 header + IPv6 header fit in payload */
     if (p->len < (sizeof(struct icmp6_hdr) + IP6_HLEN)) {
@@ -847,11 +892,12 @@ nd6_input(struct pbuf *p, struct netif *inp)
     icmp6hdr = (struct icmp6_hdr *)p->payload;
     ip6hdr = (struct ip6_hdr *)((u8_t*)p->payload + sizeof(struct icmp6_hdr));
 
-    /* Copy original destination address to current source address, to have an aligned copy. */
-    ip6_addr_set(&tmp, &(ip6hdr->dest));
+    /* Create an aligned, zoned copy of the destination address. */
+    ip6_addr_copy_from_packed(destination_address, ip6hdr->dest);
+    ip6_addr_assign_zone(&destination_address, IP6_UNKNOWN, inp);
 
     /* Look for entry in destination cache. */
-    i = nd6_find_destination_cache_entry(&tmp);
+    i = nd6_find_destination_cache_entry(&destination_address);
     if (i < 0) {
       /* Destination not in cache, drop packet. */
       pbuf_free(p);
@@ -871,6 +917,11 @@ nd6_input(struct pbuf *p, struct netif *inp)
     break; /* default */
   }
 
+  pbuf_free(p);
+  return;
+lenerr_drop_free_return:
+  ND6_STATS_INC(nd6.lenerr);
+  ND6_STATS_INC(nd6.drop);
   pbuf_free(p);
 }
 
@@ -991,7 +1042,7 @@ nd6_tmr(void)
   }
 
   /* Process our own addresses, updating address lifetimes and/or DAD state. */
-  for (netif = netif_list; netif != NULL; netif = netif->next) {
+  NETIF_FOREACH(netif) {
     for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; ++i) {
       u8_t addr_state;
 #if LWIP_IPV6_ADDRESS_LIFETIMES
@@ -1070,7 +1121,7 @@ nd6_tmr(void)
 
 #if LWIP_IPV6_SEND_ROUTER_SOLICIT
   /* Send router solicitation messages, if necessary. */
-  for (netif = netif_list; netif != NULL; netif = netif->next) {
+  NETIF_FOREACH(netif) {
     if ((netif->rs_count > 0) && netif_is_up(netif) &&
         netif_is_link_up(netif) &&
         !ip6_addr_isinvalid(netif_ip6_addr_state(netif, 0)) &&
@@ -1110,6 +1161,8 @@ nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   const ip6_addr_t *src_addr;
   u16_t lladdr_opt_len;
 
+  LWIP_ASSERT("target address is required", target_addr != NULL);
+
   if (!(flags & ND6_SEND_FLAG_ANY_SRC) &&
       ip6_addr_isvalid(netif_ip6_addr_state(netif,0))) {
     /* Use link-local address as source address. */
@@ -1136,7 +1189,7 @@ nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   ns_hdr->code = 0;
   ns_hdr->chksum = 0;
   ns_hdr->reserved = 0;
-  ip6_addr_set(&(ns_hdr->target_address), target_addr);
+  ip6_addr_copy_to_packed(ns_hdr->target_address, *target_addr);
 
   if (lladdr_opt_len != 0) {
     struct lladdr_option *lladdr_opt = (struct lladdr_option *)((u8_t*)p->payload + sizeof(struct ns_header));
@@ -1148,6 +1201,7 @@ nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   /* Generate the solicited node address for the target address. */
   if (flags & ND6_SEND_FLAG_MULTICAST_DEST) {
     ip6_addr_set_solicitednode(&multicast_address, target_addr->addr[3]);
+    ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
     target_addr = &multicast_address;
   }
 
@@ -1182,6 +1236,8 @@ nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   const ip6_addr_t *dest_addr;
   u16_t lladdr_opt_len;
 
+  LWIP_ASSERT("target address is required", target_addr != NULL);
+
   /* Use link-local address as source address. */
   /* src_addr = netif_ip6_addr(netif, 0); */
   /* Use target address as source address. */
@@ -1206,7 +1262,7 @@ nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   na_hdr->reserved[0] = 0;
   na_hdr->reserved[1] = 0;
   na_hdr->reserved[2] = 0;
-  ip6_addr_set(&(na_hdr->target_address), target_addr);
+  ip6_addr_copy_to_packed(na_hdr->target_address, *target_addr);
 
   lladdr_opt->type = ND6_OPTION_TYPE_TARGET_LLADDR;
   lladdr_opt->length = (u8_t)lladdr_opt_len;
@@ -1215,9 +1271,11 @@ nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   /* Generate the solicited node address for the target address. */
   if (flags & ND6_SEND_FLAG_MULTICAST_DEST) {
     ip6_addr_set_solicitednode(&multicast_address, target_addr->addr[3]);
+    ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
     dest_addr = &multicast_address;
   } else if (flags & ND6_SEND_FLAG_ALLNODES_DEST) {
     ip6_addr_set_allnodes_linklocal(&multicast_address);
+    ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
     dest_addr = &multicast_address;
   } else {
     dest_addr = ip6_current_src_addr();
@@ -1262,6 +1320,7 @@ nd6_send_rs(struct netif *netif)
 
   /* Generate the all routers target address. */
   ip6_addr_set_allrouters_linklocal(&multicast_address);
+  ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
 
   /* Allocate a packet. */
   if (src_addr != IP6_ADDR_ANY6) {
@@ -1477,6 +1536,9 @@ static s8_t
 nd6_find_destination_cache_entry(const ip6_addr_t *ip6addr)
 {
   s8_t i;
+
+  IP6_ADDR_ZONECHECK(ip6addr);
+
   for (i = 0; i < LWIP_ND6_NUM_DESTINATIONS; i++) {
     if (ip6_addr_cmp(ip6addr, &(destination_cache[i].destination_addr))) {
       return i;
@@ -1693,6 +1755,8 @@ nd6_get_router(const ip6_addr_t *router_addr, struct netif *netif)
 {
   s8_t i;
 
+  IP6_ADDR_ZONECHECK_NETIF(router_addr, netif);
+
   /* Look for router. */
   for (i = 0; i < LWIP_ND6_NUM_ROUTERS; i++) {
     if ((default_router_list[i].neighbor_entry != NULL) &&
@@ -1719,6 +1783,8 @@ nd6_new_router(const ip6_addr_t *router_addr, struct netif *netif)
   s8_t router_index;
   s8_t free_router_index;
   s8_t neighbor_index;
+
+  IP6_ADDR_ZONECHECK_NETIF(router_addr, netif);
 
   /* Do we have a neighbor entry for this router? */
   neighbor_index = nd6_find_neighbor_cache_entry(router_addr);
@@ -1837,6 +1903,8 @@ nd6_get_next_hop_entry(const ip6_addr_t *ip6addr, struct netif *netif)
   const ip6_addr_t *next_hop_addr;
 #endif /* LWIP_HOOK_ND6_GET_GW */
   s8_t i;
+
+  IP6_ADDR_ZONECHECK_NETIF(ip6addr, netif);
 
 #if LWIP_NETIF_HWADDRHINT
   if (netif->addr_hint != NULL) {
@@ -1966,12 +2034,11 @@ nd6_queue_packet(s8_t neighbor_index, struct pbuf *q)
     return ERR_ARG;
   }
 
-  /* IF q includes a PBUF_REF, PBUF_POOL or PBUF_RAM, we have no choice but
-   * to copy the whole queue into a new PBUF_RAM (see bug #11400)
-   * PBUF_ROMs can be left as they are, since ROM must not get changed. */
+  /* IF q includes a pbuf that must be copied, we have to copy the whole chain
+   * into a new PBUF_RAM. See the definition of PBUF_NEEDS_COPY for details. */
   p = q;
   while (p) {
-    if (p->type != PBUF_ROM) {
+    if (PBUF_NEEDS_COPY(p)) {
       copy_needed = 1;
       break;
     }
@@ -2106,7 +2173,9 @@ nd6_send_q(s8_t i)
     /* Get ipv6 header. */
     ip6hdr = (struct ip6_hdr *)(q->p->payload);
     /* Create an aligned copy. */
-    ip6_addr_set(&dest, &(ip6hdr->dest));
+    ip6_addr_copy_from_packed(dest, ip6hdr->dest);
+    /* Restore the zone, if applicable. */
+    ip6_addr_assign_zone(&dest, IP6_UNKNOWN, neighbor_cache[i].netif);
     /* send the queued IPv6 packet */
     (neighbor_cache[i].netif)->output_ip6(neighbor_cache[i].netif, q->p, &dest);
     /* free the queued IP packet */
@@ -2119,7 +2188,9 @@ nd6_send_q(s8_t i)
     /* Get ipv6 header. */
     ip6hdr = (struct ip6_hdr *)(neighbor_cache[i].q->payload);
     /* Create an aligned copy. */
-    ip6_addr_set(&dest, &(ip6hdr->dest));
+    ip6_addr_copy_from_packed(dest, ip6hdr->dest);
+    /* Restore the zone, if applicable. */
+    ip6_addr_assign_zone(&dest, IP6_UNKNOWN, neighbor_cache[i].netif);
     /* send the queued IPv6 packet */
     (neighbor_cache[i].netif)->output_ip6(neighbor_cache[i].netif, neighbor_cache[i].q, &dest);
     /* free the queued IP packet */
@@ -2317,6 +2388,7 @@ nd6_adjust_mld_membership(struct netif *netif, s8_t addr_idx, u8_t new_state)
 
   if (old_member != new_member) {
     ip6_addr_set_solicitednode(&multicast_address, netif_ip6_addr(netif, addr_idx)->addr[3]);
+    ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
 
     if (new_member) {
       mld6_joingroup_netif(netif, &multicast_address);

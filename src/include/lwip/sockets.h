@@ -108,39 +108,11 @@ struct sockaddr_storage {
 typedef u32_t socklen_t;
 #endif
 
-struct lwip_sock;
-
-#if !LWIP_TCPIP_CORE_LOCKING
-/** Maximum optlen used by setsockopt/getsockopt */
-#define LWIP_SETGETSOCKOPT_MAXOPTLEN 16
-
-/** This struct is used to pass data to the set/getsockopt_internal
- * functions running in tcpip_thread context (only a void* is allowed) */
-struct lwip_setgetsockopt_data {
-  /** socket index for which to change options */
-  int s;
-  /** level of the option to process */
-  int level;
-  /** name of the option to process */
-  int optname;
-  /** set: value to set the option to
-    * get: value of the option is stored here */
-#if LWIP_MPU_COMPATIBLE
-  u8_t optval[LWIP_SETGETSOCKOPT_MAXOPTLEN];
-#else
-  union {
-     void *p;
-     const void *pc;
-  } optval;
-#endif
-  /** size of *optval */
-  socklen_t optlen;
-  /** if an error occurs, it is temporarily stored here */
-  err_t err;
-  /** semaphore to wake up the calling task */
-  void* completed_sem;
-};
-#endif /* !LWIP_TCPIP_CORE_LOCKING */
+#if !defined IOV_MAX
+#define IOV_MAX 0xFFFF
+#elif IOV_MAX > 0xFFFF
+#error "IOV_MAX larger than supported by LwIP"
+#endif /* IOV_MAX */
 
 #if !defined(iovec)
 struct iovec {
@@ -158,6 +130,10 @@ struct msghdr {
   socklen_t     msg_controllen;
   int           msg_flags;
 };
+
+/* struct msghdr->msg_flags bit field values */
+#define MSG_TRUNC   0x04
+#define MSG_CTRUNC  0x08
 
 /* Socket protocol types (TCP/UDP/RAW) */
 #define SOCK_STREAM     1
@@ -237,6 +213,7 @@ struct linger {
 #define MSG_OOB        0x04    /* Unimplemented: Requests out-of-band data. The significance and semantics of out-of-band data are protocol-specific */
 #define MSG_DONTWAIT   0x08    /* Nonblocking i/o for this operation only */
 #define MSG_MORE       0x10    /* Sender will send more */
+#define MSG_NOSIGNAL   0x20    /* Uninmplemented: Requests not to send the SIGPIPE signal if an attempt to send is made on a stream-oriented socket that is no longer connected. */
 
 
 /*
@@ -397,6 +374,15 @@ typedef struct ip_mreq {
 #ifndef O_NDELAY
 #define O_NDELAY    1 /* same as O_NONBLOCK, for compatibility */
 #endif
+#ifndef O_RDONLY
+#define O_RDONLY    2
+#endif
+#ifndef O_WRONLY
+#define O_WRONLY    4
+#endif
+#ifndef O_RDWR
+#define O_RDWR      (O_RDONLY|O_WRONLY)
+#endif
 
 #ifndef SHUT_RD
   #define SHUT_RD   0
@@ -460,6 +446,7 @@ void lwip_socket_thread_cleanup(void); /* LWIP_NETCONN_SEM_PER_THREAD==1: destro
 #define lwip_connect      connect
 #define lwip_listen       listen
 #define lwip_recv         recv
+#define lwip_recvmsg      recvmsg
 #define lwip_recvfrom     recvfrom
 #define lwip_send         send
 #define lwip_sendmsg      sendmsg
@@ -494,6 +481,7 @@ int lwip_recv(int s, void *mem, size_t len, int flags);
 int lwip_read(int s, void *mem, size_t len);
 int lwip_recvfrom(int s, void *mem, size_t len, int flags,
       struct sockaddr *from, socklen_t *fromlen);
+int lwip_recvmsg(int s, struct msghdr *message, int flags);
 int lwip_send(int s, const void *dataptr, size_t size, int flags);
 int lwip_sendmsg(int s, const struct msghdr *message, int flags);
 int lwip_sendto(int s, const void *dataptr, size_t size, int flags,
@@ -501,8 +489,10 @@ int lwip_sendto(int s, const void *dataptr, size_t size, int flags,
 int lwip_socket(int domain, int type, int protocol);
 int lwip_write(int s, const void *dataptr, size_t size);
 int lwip_writev(int s, const struct iovec *iov, int iovcnt);
+#if LWIP_SOCKET_SELECT
 int lwip_select(int maxfdp1, fd_set *readset, fd_set *writeset, fd_set *exceptset,
                 struct timeval *timeout);
+#endif
 int lwip_ioctl(int s, long cmd, void *argp);
 int lwip_fcntl(int s, int cmd, int val);
 
@@ -530,6 +520,8 @@ int lwip_fcntl(int s, int cmd, int val);
 #define listen(s,backlog)                         lwip_listen(s,backlog)
 /** @ingroup socket */
 #define recv(s,mem,len,flags)                     lwip_recv(s,mem,len,flags)
+/** @ingroup socket */
+#define recvmsg(s,message,flags)                  lwip_recvmsg(s,message,flags)
 /** @ingroup socket */
 #define recvfrom(s,mem,len,flags,from,fromlen)    lwip_recvfrom(s,mem,len,flags,from,fromlen)
 /** @ingroup socket */

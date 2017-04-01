@@ -86,9 +86,9 @@ struct udp_pcb *udp_pcbs;
 void
 udp_init(void)
 {
-#if LWIP_RANDOMIZE_INITIAL_LOCAL_PORTS && defined(LWIP_RAND)
+#ifdef LWIP_RAND
   udp_port = UDP_ENSURE_LOCAL_PORT_RANGE(LWIP_RAND());
-#endif /* LWIP_RANDOMIZE_INITIAL_LOCAL_PORTS && defined(LWIP_RAND) */
+#endif /* LWIP_RAND */
 }
 
 /**
@@ -514,7 +514,7 @@ udp_sendto_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
 {
 #endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
   struct netif *netif;
-  const ip_addr_t *dst_ip_route = dst_ip;
+  const ip_addr_t *src_ip_route;
 
   if ((pcb == NULL) || (dst_ip == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
     return ERR_VAL;
@@ -522,35 +522,50 @@ udp_sendto_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
 
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE, ("udp_send\n"));
 
-#if LWIP_IPV6 || (LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS)
-  if (ip_addr_ismulticast(dst_ip_route)) {
+  if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
+    /* Don't call ip_route() with IP_ANY_TYPE */
+    src_ip_route = IP46_ADDR_ANY(IP_GET_TYPE(dst_ip));
+  } else {
+    src_ip_route = &pcb->local_ip;
+  }
+  LWIP_UNUSED_ARG(src_ip_route); /* IPv4 only and no source based routing */
+
+#if LWIP_MULTICAST_TX_OPTIONS
+  netif = NULL;
+  if (ip_addr_ismulticast(dst_ip)) {
+    /* For IPv6, the interface to use for packets with a multicast destination
+     * is specified using an interface index. The same approach may be used for
+     * IPv4 as well, in which case it overrides the IPv4 multicast override
+     * address below. Here we have to look up the netif by going through the
+     * list, but by doing so we skip a route lookup. If the interface index has
+     * gone stale, we fall through and do the regular route lookup after all. */
+    if (pcb->mcast_ifindex != NETIF_NO_INDEX) {
+      netif = netif_get_by_index(pcb->mcast_ifindex);
+    }
+#if LWIP_IPV4
+    else
 #if LWIP_IPV6
-    if (IP_IS_V6(dst_ip)) {
-      /* For multicast, find a netif based on source address. */
-      dst_ip_route = &pcb->local_ip;
-    } else
+    if (IP_IS_V4(dst_ip))
 #endif /* LWIP_IPV6 */
     {
-#if LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS
       /* IPv4 does not use source-based routing by default, so we use an
          administratively selected interface for multicast by default.
          However, this can be overridden by setting an interface address
-         in pcb->multicast_ip that is used for routing. */
-      if (!ip_addr_isany_val(pcb->multicast_ip) &&
-          !ip4_addr_cmp(ip_2_ip4(&pcb->multicast_ip), IP4_ADDR_BROADCAST)) {
-        dst_ip_route = &pcb->multicast_ip;
+         in pcb->mcast_ip4 that is used for routing. If this routing lookup
+         fails, we try regular routing as though no override was set. */
+      if (!ip4_addr_isany_val(pcb->mcast_ip4) &&
+          !ip4_addr_cmp(&pcb->mcast_ip4, IP4_ADDR_BROADCAST)) {
+        netif = ip4_route_src(ip_2_ip4(src_ip_route), &pcb->mcast_ip4);
       }
-#endif /* LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS */
     }
+#endif /* LWIP_IPV4 */
   }
-#endif /* LWIP_IPV6 || (LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS) */
 
-  /* find the outgoing network interface for this packet */
-  if(IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
-    /* Don't call ip_route() with IP_ANY_TYPE */
-    netif = ip_route(IP46_ADDR_ANY(IP_GET_TYPE(dst_ip_route)), dst_ip_route);
-  } else {
-    netif = ip_route(&pcb->local_ip, dst_ip_route);
+  if (netif == NULL)
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+  {
+    /* find the outgoing network interface for this packet */
+    netif = ip_route(src_ip_route, dst_ip);
   }
 
   /* no outgoing network interface could be found? */
@@ -609,10 +624,11 @@ udp_sendto_if_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_i
     return ERR_VAL;
   }
 
-  /* PCB local address is IP_ANY_ADDR? */
+  /* PCB local address is IP_ANY_ADDR or multicast? */
 #if LWIP_IPV6
   if (IP_IS_V6(dst_ip)) {
-    if (ip6_addr_isany(ip_2_ip6(&pcb->local_ip))) {
+    if (ip6_addr_isany(ip_2_ip6(&pcb->local_ip)) ||
+        ip6_addr_ismulticast(ip_2_ip6(&pcb->local_ip))) {
       src_ip = ip6_select_source_address(netif, ip_2_ip6(dst_ip));
       if (src_ip == NULL) {
         /* No suitable source address was found. */
@@ -706,6 +722,10 @@ udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *d
     }
   }
 
+  /* packet too large to add a UDP header without causing an overflow? */
+  if ((u16_t)(p->tot_len + UDP_HLEN) < p->tot_len) {
+    return ERR_MEM;
+  }
   /* not enough space to add an UDP header to first pbuf in given p chain? */
   if (pbuf_header(p, UDP_HLEN)) {
     /* allocate header in a separate new pbuf */
@@ -738,11 +758,11 @@ udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *d
   udphdr->chksum = 0x0000;
 
   /* Multicast Loop? */
-#if (LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS) || (LWIP_IPV6 && LWIP_IPV6_MLD)
+#if LWIP_MULTICAST_TX_OPTIONS
   if (((pcb->flags & UDP_FLAGS_MULTICAST_LOOP) != 0) && ip_addr_ismulticast(dst_ip)) {
     q->flags |= PBUF_FLAG_MCASTLOOP;
   }
-#endif /* (LWIP_IPV4 && LWIP_MULTICAST_TX_OPTIONS) || (LWIP_IPV6 && LWIP_IPV6_MLD) */
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
 
   LWIP_DEBUGF(UDP_DEBUG, ("udp_send: sending datagram of length %"U16_F"\n", q->tot_len));
 
@@ -883,6 +903,9 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 {
   struct udp_pcb *ipcb;
   u8_t rebind;
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  ip_addr_t zoned_ipaddr;
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
 
 #if LWIP_IPV4
   /* Don't propagate NULL pointer (IPv4 ANY) to subsequent functions */
@@ -892,7 +915,7 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 #endif /* LWIP_IPV4 */
 
   /* still need to check for ipaddr == NULL in IPv6 only case */
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
 
@@ -909,6 +932,18 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
       break;
     }
   }
+
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now.
+   * This is legacy support: scope-aware callers should always provide properly
+   * zoned source addresses. Do the zone selection before the address-in-use
+   * check below; as such we have to make a temporary copy of the address. */
+  if (IP_IS_V6(ipaddr) && ip6_addr_lacks_zone(ip_2_ip6(ipaddr), IP6_UNKNOWN)) {
+    ip_addr_copy(zoned_ipaddr, *ipaddr);
+    ip6_addr_select_zone(ip_2_ip6(&zoned_ipaddr), ip_2_ip6(&zoned_ipaddr));
+    ipaddr = &zoned_ipaddr;
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
 
   /* no port specified? */
   if (port == 0) {
@@ -982,7 +1017,7 @@ udp_connect(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 {
   struct udp_pcb *ipcb;
 
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
 
@@ -994,6 +1029,15 @@ udp_connect(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
   }
 
   ip_addr_set_ipaddr(&pcb->remote_ip, ipaddr);
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now,
+   * using the bound address to make a more informed decision when possible. */
+  if (IP_IS_V6(&pcb->remote_ip) &&
+      ip6_addr_lacks_zone(ip_2_ip6(&pcb->remote_ip), IP6_UNKNOWN)) {
+    ip6_addr_select_zone(ip_2_ip6(&pcb->remote_ip), ip_2_ip6(&pcb->local_ip));
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
+
   pcb->remote_port = port;
   pcb->flags |= UDP_FLAGS_CONNECTED;
 

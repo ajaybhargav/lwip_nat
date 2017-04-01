@@ -18,7 +18,6 @@
  * - Checking that source address of unicast requests are on the same network
  * - Limiting multicast responses to 1 per second per resource record
  * - Fragmenting replies if required
- * - Subscribe to netif address/link change events and act on them (currently needs to be done manually)
  * - Handling multi-packet known answers
  * - Individual known answer detection for all local IPv6 addresses
  * - Dynamic size of outgoing packet
@@ -102,6 +101,7 @@ static const ip_addr_t v6group = DNS_MQUERY_IPV6_GROUP_INIT;
 
 static u8_t mdns_netif_client_id;
 static struct udp_pcb *mdns_pcb;
+NETIF_DECLARE_EXT_CALLBACK(netif_callback)
 
 #define NETIF_TO_HOST(netif) (struct mdns_host*)(netif_get_client_data(netif, mdns_netif_client_id))
 
@@ -261,15 +261,8 @@ struct mdns_answer {
   u16_t rd_offset;
 };
 
-/**
- * Add a label part to a domain
- * @param domain The domain to add a label to
- * @param label The label to add, like &lt;hostname&gt;, 'local', 'com' or ''
- * @param len The length of the label
- * @return ERR_OK on success, an err_t otherwise if label too long
- */
-err_t
-mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len)
+static err_t
+mdns_domain_add_label_base(struct mdns_domain *domain, u8_t len)
 {
   if (len > MDNS_LABEL_MAXLEN) {
     return ERR_VAL;
@@ -283,8 +276,46 @@ mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len)
   }
   domain->name[domain->length] = len;
   domain->length++;
+  return ERR_OK;
+}
+
+/**
+ * Add a label part to a domain
+ * @param domain The domain to add a label to
+ * @param label The label to add, like &lt;hostname&gt;, 'local', 'com' or ''
+ * @param len The length of the label
+ * @return ERR_OK on success, an err_t otherwise if label too long
+ */
+err_t
+mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len)
+{
+  err_t err = mdns_domain_add_label_base(domain, len);
+  if (err != ERR_OK) {
+    return err;
+  }
   if (len) {
     MEMCPY(&domain->name[domain->length], label, len);
+    domain->length += len;
+  }
+  return ERR_OK;
+}
+
+/**
+ * Add a label part to a domain (@see mdns_domain_add_label but copy directly from pbuf)
+ */
+static err_t
+mdns_domain_add_label_pbuf(struct mdns_domain *domain, const struct pbuf *p, u16_t offset, u8_t len)
+{
+  err_t err = mdns_domain_add_label_base(domain, len);
+  if (err != ERR_OK) {
+    return err;
+  }
+  if (len) {
+    if (pbuf_copy_partial(p, &domain->name[domain->length], len, offset) != len) {
+      /* take back the ++ done before */
+      domain->length--;
+      return ERR_ARG;
+    }
     domain->length += len;
   }
   return ERR_OK;
@@ -333,22 +364,16 @@ mdns_readname_loop(struct pbuf *p, u16_t offset, struct mdns_domain *domain, uns
 
     /* normal label */
     if (c <= MDNS_LABEL_MAXLEN) {
-      u8_t label[MDNS_LABEL_MAXLEN];
       err_t res;
 
       if (c + domain->length >= MDNS_DOMAIN_MAXLEN) {
         return MDNS_READNAME_ERROR;
       }
-      if (c != 0) {
-        if (pbuf_copy_partial(p, label, c, offset) != c) {
-          return MDNS_READNAME_ERROR;
-        }
-        offset += c;
-      }
-      res = mdns_domain_add_label(domain, (char *) label, c);
+      res = mdns_domain_add_label_pbuf(domain, p, offset, c);
       if (res != ERR_OK) {
         return MDNS_READNAME_ERROR;
       }
+      offset += c;
     } else {
       /* bad length byte */
       return MDNS_READNAME_ERROR;
@@ -1805,34 +1830,10 @@ dealloc:
 
 /**
  * @ingroup mdns
- * Initiate MDNS responder. Will open UDP sockets on port 5353
- */
-void
-mdns_resp_init(void)
-{
-  err_t res;
-
-  mdns_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
-  LWIP_ASSERT("Failed to allocate pcb", mdns_pcb != NULL);
-#if LWIP_MULTICAST_TX_OPTIONS
-  udp_set_multicast_ttl(mdns_pcb, MDNS_TTL);
-#else
-  mdns_pcb->ttl = MDNS_TTL;
-#endif
-  res = udp_bind(mdns_pcb, IP_ANY_TYPE, MDNS_PORT);
-  LWIP_UNUSED_ARG(res); /* in case of LWIP_NOASSERT */
-  LWIP_ASSERT("Failed to bind pcb", res == ERR_OK);
-  udp_recv(mdns_pcb, mdns_recv, NULL);
-
-  mdns_netif_client_id = netif_alloc_client_data_id();
-}
-
-/**
- * @ingroup mdns
  * Announce IP settings have changed on netif.
  * Call this in your callback registered by netif_set_status_callback().
- * This function may go away in the future when netif supports registering
- * multiple callback functions.
+ * No need to call this function when LWIP_NETIF_EXT_STATUS_CALLBACK==1,
+ * this handled automatically for you.
  * @param netif The network interface where settings have changed.
  */
 void
@@ -1846,12 +1847,50 @@ mdns_resp_netif_settings_changed(struct netif *netif)
 
   /* Announce on IPv6 and IPv4 */
 #if LWIP_IPV6
-   mdns_announce(netif, IP6_ADDR_ANY);
+  mdns_announce(netif, IP6_ADDR_ANY);
 #endif
 #if LWIP_IPV4
-   mdns_announce(netif, IP4_ADDR_ANY);
+  mdns_announce(netif, IP4_ADDR_ANY);
 #endif
 }
+
+#if LWIP_NETIF_EXT_STATUS_CALLBACK
+static void
+mdns_netif_ext_status_callback(struct netif* netif, netif_nsc_reason_t reason, const netif_ext_callback_args_t* args)
+{
+  LWIP_UNUSED_ARG(args);
+
+  /* MDNS enabled on netif? */
+  if (NETIF_TO_HOST(netif) == NULL) {
+    return;
+  }
+
+  switch (reason)
+  {
+  case LWIP_NSC_STATUS_CHANGED:
+    if (args->status_changed.state != 0) {
+      mdns_resp_netif_settings_changed(netif);
+    }
+    /* TODO: send goodbye message */
+    break;
+  case LWIP_NSC_LINK_CHANGED:
+    if (args->link_changed.state != 0) {
+      mdns_resp_netif_settings_changed(netif);
+    }
+    break;
+  case LWIP_NSC_IPV4_ADDRESS_CHANGED:  /* fall through */
+  case LWIP_NSC_IPV4_GATEWAY_CHANGED:  /* fall through */
+  case LWIP_NSC_IPV4_NETMASK_CHANGED:  /* fall through */
+  case LWIP_NSC_IPV4_SETTINGS_CHANGED: /* fall through */
+  case LWIP_NSC_IPV6_SET:              /* fall through */
+  case LWIP_NSC_IPV6_ADDR_STATE_CHANGED:
+    mdns_resp_netif_settings_changed(netif);
+    break;
+  default:
+    break;
+  }
+}
+#endif
 
 /**
  * @ingroup mdns
@@ -1875,7 +1914,7 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
   LWIP_ASSERT("mdns_resp_add_netif: Double add", NETIF_TO_HOST(netif) == NULL);
   mdns = (struct mdns_host *) mem_malloc(sizeof(struct mdns_host));
   LWIP_ERROR("mdns_resp_add_netif: Alloc failed", (mdns != NULL), return ERR_MEM);
-
+  
   netif_set_client_data(netif, mdns_netif_client_id, mdns);
 
   memset(mdns, 0, sizeof(struct mdns_host));
@@ -2023,6 +2062,33 @@ mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_
 
   /* Use a mdns_domain struct to store txt chunks since it is the same encoding */
   return mdns_domain_add_label(&service->txtdata, txt, txt_len);
+}
+
+/**
+ * @ingroup mdns
+ * Initiate MDNS responder. Will open UDP sockets on port 5353
+ */
+void
+mdns_resp_init(void)
+{
+  err_t res;
+
+  mdns_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+  LWIP_ASSERT("Failed to allocate pcb", mdns_pcb != NULL);
+#if LWIP_MULTICAST_TX_OPTIONS
+  udp_set_multicast_ttl(mdns_pcb, MDNS_TTL);
+#else
+  mdns_pcb->ttl = MDNS_TTL;
+#endif
+  res = udp_bind(mdns_pcb, IP_ANY_TYPE, MDNS_PORT);
+  LWIP_UNUSED_ARG(res); /* in case of LWIP_NOASSERT */
+  LWIP_ASSERT("Failed to bind pcb", res == ERR_OK);
+  udp_recv(mdns_pcb, mdns_recv, NULL);
+
+  mdns_netif_client_id = netif_alloc_client_data_id();
+
+  /* register for netif events when started on first netif */
+  netif_add_ext_callback(&netif_callback, mdns_netif_ext_status_callback);
 }
 
 #endif /* LWIP_MDNS_RESPONDER */

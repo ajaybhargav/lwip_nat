@@ -61,8 +61,6 @@
 
 /** Initial CWND calculation as defined RFC 2581 */
 #define LWIP_TCP_CALC_INITIAL_CWND(mss) LWIP_MIN((4U * (mss)), LWIP_MAX((2U * (mss)), 4380U));
-/** Initial slow start threshold value: we use the full window */
-#define LWIP_TCP_INITIAL_SSTHRESH(pcb)  ((pcb)->snd_wnd)
 
 /* These variables are global to all functions involved in the input
    processing of TCP segments. They are set by the tcp_input()
@@ -378,7 +376,7 @@ tcp_input(struct pbuf *p, struct netif *inp)
            end. We then call the error callback to inform the
            application that the connection is dead before we
            deallocate the PCB. */
-        TCP_EVENT_ERR(pcb->errf, pcb->callback_arg, ERR_RST);
+        TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_RST);
         tcp_pcb_remove(&tcp_active_pcbs, pcb);
         memp_free(MEMP_TCP_PCB, pcb);
       } else {
@@ -413,7 +411,7 @@ tcp_input(struct pbuf *p, struct netif *inp)
             /* Connection closed although the application has only shut down the
                tx side: call the PCB's err callback and indicate the closure to
                ensure the application doesn't continue using the PCB. */
-            TCP_EVENT_ERR(pcb->errf, pcb->callback_arg, ERR_CLSD);
+            TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_CLSD);
           }
           tcp_pcb_remove(&tcp_active_pcbs, pcb);
           memp_free(MEMP_TCP_PCB, pcb);
@@ -615,7 +613,6 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
     tcp_parseopt(npcb);
     npcb->snd_wnd = tcphdr->wnd;
     npcb->snd_wnd_max = npcb->snd_wnd;
-    npcb->ssthresh = LWIP_TCP_INITIAL_SSTHRESH(npcb);
 
 #if TCP_CALCULATE_EFF_SEND_MSS
     npcb->mss = tcp_eff_send_mss(npcb->mss, &npcb->local_ip, &npcb->remote_ip);
@@ -771,9 +768,6 @@ tcp_process(struct tcp_pcb *pcb)
       pcb->mss = tcp_eff_send_mss(pcb->mss, &pcb->local_ip, &pcb->remote_ip);
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
 
-      /* Set ssthresh again after changing 'mss' and 'snd_wnd' */
-      pcb->ssthresh = LWIP_TCP_INITIAL_SSTHRESH(pcb);
-
       pcb->cwnd = LWIP_TCP_CALC_INITIAL_CWND(pcb->mss);
       LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_process (SENT): cwnd %"TCPWNDSIZE_F
                                    " ssthresh %"TCPWNDSIZE_F"\n",
@@ -816,9 +810,12 @@ tcp_process(struct tcp_pcb *pcb)
       tcp_rst(ackno, seqno + tcplen, ip_current_dest_addr(),
         ip_current_src_addr(), tcphdr->dest, tcphdr->src);
       /* Resend SYN immediately (don't wait for rto timeout) to establish
-        connection faster */
-      pcb->rtime = 0;
-      tcp_rexmit_rto(pcb);
+        connection faster, but do not send more SYNs than we otherwise would
+        have, or we might get caught in a loop on loopback interfaces. */
+      if (pcb->nrtx < TCP_SYNMAXRTX) {
+        pcb->rtime = 0;
+        tcp_rexmit_rto(pcb);
+      }
     }
     break;
   case SYN_RCVD:
@@ -827,15 +824,16 @@ tcp_process(struct tcp_pcb *pcb)
       if (TCP_SEQ_BETWEEN(ackno, pcb->lastack+1, pcb->snd_nxt)) {
         pcb->state = ESTABLISHED;
         LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", inseg.tcphdr->src, inseg.tcphdr->dest));
-#if LWIP_CALLBACK_API
-        LWIP_ASSERT("pcb->listener->accept != NULL",
-          (pcb->listener == NULL) || (pcb->listener->accept != NULL));
+#if LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG
         if (pcb->listener == NULL) {
           /* listen pcb might be closed by now */
           err = ERR_VAL;
         } else
-#endif
+#endif /* LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG */
         {
+#if LWIP_CALLBACK_API
+          LWIP_ASSERT("pcb->listener->accept != NULL", pcb->listener->accept != NULL);
+#endif
           tcp_backlog_accepted(pcb);
           /* Call the accept function. */
           TCP_EVENT_ACCEPT(pcb->listener, pcb, pcb->callback_arg, ERR_OK, err);
@@ -852,11 +850,6 @@ tcp_process(struct tcp_pcb *pcb)
         /* If there was any data contained within this ACK,
          * we'd better pass it on to the application as well. */
         tcp_receive(pcb);
-
-        /* passive open: update initial ssthresh now that the correct window is
-           known: if the remote side supports window scaling, the window sent
-           with the initial SYN can be smaller than the one used later */
-        pcb->ssthresh = LWIP_TCP_INITIAL_SSTHRESH(pcb);
 
         /* Prevent ACK for SYN to generate a sent event */
         if (recv_acked != 0) {
@@ -1195,45 +1188,45 @@ tcp_receive(struct tcp_pcb *pcb)
         nd6_reachability_hint(ip6_current_src_addr());
       }
 #endif /* LWIP_IPV6 && LWIP_ND6_TCP_REACHABILITY_HINTS*/
+
+      /* We go through the ->unsent list to see if any of the segments
+         on the list are acknowledged by the ACK. This may seem
+         strange since an "unsent" segment shouldn't be acked. The
+         rationale is that lwIP puts all outstanding segments on the
+         ->unsent list after a retransmission, so these segments may
+         in fact have been sent once. */
+      while (pcb->unsent != NULL &&
+             TCP_SEQ_LEQ(lwip_ntohl(pcb->unsent->tcphdr->seqno) +
+                         TCP_TCPLEN(pcb->unsent), ackno)) {
+        LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: removing %"U32_F":%"U32_F" from pcb->unsent\n",
+                                      lwip_ntohl(pcb->unsent->tcphdr->seqno), lwip_ntohl(pcb->unsent->tcphdr->seqno) +
+                                      TCP_TCPLEN(pcb->unsent)));
+
+        next = pcb->unsent;
+        pcb->unsent = pcb->unsent->next;
+#if TCP_OVERSIZE
+        if (pcb->unsent == NULL) {
+          pcb->unsent_oversize = 0;
+        }
+#endif /* TCP_OVERSIZE */
+        LWIP_DEBUGF(TCP_QLEN_DEBUG, ("tcp_receive: queuelen %"TCPWNDSIZE_F" ... ", (tcpwnd_size_t)pcb->snd_queuelen));
+        LWIP_ASSERT("pcb->snd_queuelen >= pbuf_clen(next->p)", (pcb->snd_queuelen >= pbuf_clen(next->p)));
+        /* Prevent ACK for FIN to generate a sent event */
+        pcb->snd_queuelen -= pbuf_clen(next->p);
+        recv_acked += next->len;
+        tcp_seg_free(next);
+        LWIP_DEBUGF(TCP_QLEN_DEBUG, ("%"TCPWNDSIZE_F" (after freeing unsent)\n", (tcpwnd_size_t)pcb->snd_queuelen));
+        if (pcb->snd_queuelen != 0) {
+          LWIP_ASSERT("tcp_receive: valid queue length",
+            pcb->unacked != NULL || pcb->unsent != NULL);
+        }
+      }
+      pcb->snd_buf += recv_acked;
+      /* End of ACK for new data processing. */
     } else {
       /* Out of sequence ACK, didn't really ack anything */
       tcp_send_empty_ack(pcb);
     }
-
-    /* We go through the ->unsent list to see if any of the segments
-       on the list are acknowledged by the ACK. This may seem
-       strange since an "unsent" segment shouldn't be acked. The
-       rationale is that lwIP puts all outstanding segments on the
-       ->unsent list after a retransmission, so these segments may
-       in fact have been sent once. */
-    while (pcb->unsent != NULL &&
-           TCP_SEQ_BETWEEN(ackno, lwip_ntohl(pcb->unsent->tcphdr->seqno) +
-                           TCP_TCPLEN(pcb->unsent), pcb->snd_nxt)) {
-      LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: removing %"U32_F":%"U32_F" from pcb->unsent\n",
-                                    lwip_ntohl(pcb->unsent->tcphdr->seqno), lwip_ntohl(pcb->unsent->tcphdr->seqno) +
-                                    TCP_TCPLEN(pcb->unsent)));
-
-      next = pcb->unsent;
-      pcb->unsent = pcb->unsent->next;
-#if TCP_OVERSIZE
-      if (pcb->unsent == NULL) {
-        pcb->unsent_oversize = 0;
-      }
-#endif /* TCP_OVERSIZE */
-      LWIP_DEBUGF(TCP_QLEN_DEBUG, ("tcp_receive: queuelen %"TCPWNDSIZE_F" ... ", (tcpwnd_size_t)pcb->snd_queuelen));
-      LWIP_ASSERT("pcb->snd_queuelen >= pbuf_clen(next->p)", (pcb->snd_queuelen >= pbuf_clen(next->p)));
-      /* Prevent ACK for FIN to generate a sent event */
-      pcb->snd_queuelen -= pbuf_clen(next->p);
-      recv_acked += next->len;
-      tcp_seg_free(next);
-      LWIP_DEBUGF(TCP_QLEN_DEBUG, ("%"TCPWNDSIZE_F" (after freeing unsent)\n", (tcpwnd_size_t)pcb->snd_queuelen));
-      if (pcb->snd_queuelen != 0) {
-        LWIP_ASSERT("tcp_receive: valid queue length",
-          pcb->unacked != NULL || pcb->unsent != NULL);
-      }
-    }
-    pcb->snd_buf += recv_acked;
-    /* End of ACK for new data processing. */
 
     LWIP_DEBUGF(TCP_RTO_DEBUG, ("tcp_receive: pcb->rttest %"U32_F" rtseq %"U32_F" ackno %"U32_F"\n",
                                 pcb->rttest, pcb->rtseq, ackno));

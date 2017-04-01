@@ -1,12 +1,16 @@
 /**
  * @file
- * Interface Identification APIs from:
- *              RFC 3493: Basic Socket Interface Extensions for IPv6
- *                  Section 4: Interface Identification
+ * Application layered TCP connection API (to be used from TCPIP thread)\n
+ * This interface mimics the tcp callback API to the application while preventing
+ * direct linking (much like virtual functions).
+ * This way, an application can make use of other application layer protocols
+ * on top of TCP without knowing the details (e.g. TLS, proxy connection).
+ *
+ * This file contains the base implementation calling into tcp.
  */
 
 /*
- * Copyright (c) 2017 Joel Cunningham <joel.cunningham@me.com>
+ * Copyright (c) 2017 Simon Goldschmidt
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -33,22 +37,31 @@
  *
  * This file is part of the lwIP TCP/IP stack.
  *
- * Author: Joel Cunningham <joel.cunningham@me.com>
+ * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
-#ifndef LWIP_HDR_IF_H
-#define LWIP_HDR_IF_H
+#ifndef LWIP_HDR_ALTCP_TCP_H
+#define LWIP_HDR_ALTCP_TCP_H
 
 #include "lwip/opt.h"
 
-#define IF_NAMESIZE 6 /* 2 chars, 3 nums, 1 \0 */
+#if LWIP_ALTCP /* don't build if not configured for use in lwipopts.h */
 
-char * lwip_if_indextoname(unsigned ifindex, char *ifname);
-unsigned int lwip_if_nametoindex(const char *ifname);
+#include "lwip/altcp.h"
 
-#if LWIP_COMPAT_SOCKETS
-#define if_indextoname(ifindex, ifname)  lwip_if_indextoname(ifindex,ifname)
-#define if_nametoindex(ifname)           lwip_if_nametoindex(ifname)
-#endif /* LWIP_COMPAT_SOCKETS */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#endif /* LWIP_HDR_IF_H */
+struct altcp_pcb *altcp_tcp_new_ip_type(u8_t ip_type);
+
+#define altcp_tcp_new() altcp_tcp_new_ip_type(IPADDR_TYPE_V4)
+#define altcp_tcp_new_ip6() altcp_tcp_new_ip_type(IPADDR_TYPE_V6)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LWIP_ALTCP */
+
+#endif /* LWIP_HDR_ALTCP_TCP_H */

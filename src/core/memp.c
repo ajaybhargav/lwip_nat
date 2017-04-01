@@ -63,6 +63,7 @@
 #include "lwip/priv/tcpip_priv.h"
 #include "lwip/priv/api_msg.h"
 #include "lwip/sockets.h"
+#include "lwip/priv/sockets_priv.h"
 #include "lwip/netifapi.h"
 #include "lwip/etharp.h"
 #include "lwip/igmp.h"
@@ -75,7 +76,6 @@
 #include "lwip/ip6_frag.h"
 #include "lwip/mld6.h"
 
-
 #define LWIP_MEMPOOL(name,num,size,desc) LWIP_MEMPOOL_DECLARE(name,num,size,desc)
 #include "lwip/priv/memp_std.h"
 
@@ -83,6 +83,10 @@ const struct memp_desc* const memp_pools[MEMP_MAX] = {
 #define LWIP_MEMPOOL(name,num,size,desc) &memp_ ## name,
 #include "lwip/priv/memp_std.h"
 };
+
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
 
 #if MEMP_MEM_MALLOC && MEMP_OVERFLOW_CHECK >= 2
 #undef MEMP_OVERFLOW_CHECK

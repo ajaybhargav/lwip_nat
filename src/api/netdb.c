@@ -187,7 +187,7 @@ lwip_gethostbyname_r(const char *name, struct hostent *ret, char *buf,
   }
 
   namelen = strlen(name);
-  if (buflen < (sizeof(struct gethostbyname_r_helper) + namelen + 1 + (MEM_ALIGNMENT - 1))) {
+  if (buflen < (sizeof(struct gethostbyname_r_helper) + LWIP_MEM_ALIGN_BUFFER(namelen + 1))) {
     /* buf can't hold the data needed + a copy of name */
     *h_errnop = ERANGE;
     return -1;
@@ -376,6 +376,7 @@ lwip_getaddrinfo(const char *nodename, const char *servname,
     sa6->sin6_family = AF_INET6;
     sa6->sin6_len = sizeof(struct sockaddr_in6);
     sa6->sin6_port = lwip_htons((u16_t)port_nr);
+    sa6->sin6_scope_id = ip6_addr_zone(ip_2_ip6(&addr));
     ai->ai_family = AF_INET6;
 #endif /* LWIP_IPV6 */
   } else {

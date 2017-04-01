@@ -16,6 +16,17 @@
 #error "This tests needs TCP_SND_BUF to be > TCP_WND"
 #endif
 
+/* used with check_seqnos() */
+#define SEQNO1 (0xFFFFFF00 - TCP_MSS)
+#define ISS    6510
+static u32_t seqnos[] = {
+    SEQNO1,
+    SEQNO1 + (1 * TCP_MSS),
+    SEQNO1 + (2 * TCP_MSS),
+    SEQNO1 + (3 * TCP_MSS),
+    SEQNO1 + (4 * TCP_MSS),
+    SEQNO1 + (5 * TCP_MSS) };
+
 static u8_t test_tcp_timer;
 
 /* our own version of tcp_tmr so we can reset fast/slow timer state */
@@ -29,10 +40,16 @@ test_tcp_tmr(void)
 }
 
 /* Setups/teardown functions */
+static struct netif *old_netif_list;
+static struct netif *old_netif_default;
 
 static void
 tcp_setup(void)
 {
+  old_netif_list = netif_list;
+  old_netif_default = netif_default;
+  netif_list = NULL;
+  netif_default = NULL;
   /* reset iss to default (6510) */
   tcp_ticks = 0;
   tcp_ticks = 0 - (tcp_next_iss(NULL) - 6510);
@@ -46,9 +63,12 @@ tcp_setup(void)
 static void
 tcp_teardown(void)
 {
-  tcp_remove_all();
   netif_list = NULL;
   netif_default = NULL;
+  tcp_remove_all();
+  /* restore netif_list for next tests (e.g. loopif) */
+  netif_list = old_netif_list;
+  netif_default = old_netif_default;
 }
 
 
@@ -79,19 +99,13 @@ START_TEST(test_tcp_recv_inseq)
   struct tcp_pcb* pcb;
   struct pbuf* p;
   char data[] = {1, 2, 3, 4};
-  ip_addr_t remote_ip, local_ip, netmask;
   u16_t data_len;
-  u16_t remote_port = 0x100, local_port = 0x101;
   struct netif netif;
   struct test_tcp_txcounters txcounters;
   LWIP_UNUSED_ARG(_i);
 
   /* initialize local vars */
-  memset(&netif, 0, sizeof(netif));
-  IP_ADDR4(&local_ip, 192, 168, 1, 1);
-  IP_ADDR4(&remote_ip, 192, 168, 1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   data_len = sizeof(data);
   /* initialize counter struct */
   memset(&counters, 0, sizeof(counters));
@@ -101,7 +115,7 @@ START_TEST(test_tcp_recv_inseq)
   /* create and initialize the pcb */
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
 
   /* create a segment */
   p = tcp_create_rx_segment(pcb, counters.expected_data, data_len, 0, 0, 0);
@@ -130,20 +144,14 @@ START_TEST(test_tcp_malformed_header)
   struct tcp_pcb* pcb;
   struct pbuf* p;
   char data[] = {1, 2, 3, 4};
-  ip_addr_t remote_ip, local_ip, netmask;
   u16_t data_len, chksum;
-  u16_t remote_port = 0x100, local_port = 0x101;
   struct netif netif;
   struct test_tcp_txcounters txcounters;
   struct tcp_hdr *hdr;
   LWIP_UNUSED_ARG(_i);
 
   /* initialize local vars */
-  memset(&netif, 0, sizeof(netif));
-  IP_ADDR4(&local_ip, 192, 168, 1, 1);
-  IP_ADDR4(&remote_ip, 192, 168, 1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   data_len = sizeof(data);
   /* initialize counter struct */
   memset(&counters, 0, sizeof(counters));
@@ -153,7 +161,7 @@ START_TEST(test_tcp_malformed_header)
   /* create and initialize the pcb */
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
 
   /* create a segment */
   p = tcp_create_rx_segment(pcb, counters.expected_data, data_len, 0, 0, 0);
@@ -166,7 +174,7 @@ START_TEST(test_tcp_malformed_header)
   hdr->chksum = 0;
 
   chksum = ip_chksum_pseudo(p, IP_PROTO_TCP, p->tot_len,
-                             &remote_ip, &local_ip);
+                             &test_remote_ip, &test_local_ip);
 
   hdr->chksum = chksum;
 
@@ -207,22 +215,17 @@ START_TEST(test_tcp_fast_retx_recover)
   char data4[] = {13, 14, 15, 16};
   char data5[] = {17, 18, 19, 20};
   char data6[TCP_MSS] = {21, 22, 23, 24};
-  ip_addr_t remote_ip, local_ip, netmask;
-  u16_t remote_port = 0x100, local_port = 0x101;
   err_t err;
   LWIP_UNUSED_ARG(_i);
 
   /* initialize local vars */
-  IP_ADDR4(&local_ip,  192, 168,   1, 1);
-  IP_ADDR4(&remote_ip, 192, 168,   1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   memset(&counters, 0, sizeof(counters));
 
   /* create and initialize the pcb */
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
   pcb->mss = TCP_MSS;
   /* disable initial congestion window (we don't send a SYN here...) */
   pcb->cwnd = pcb->snd_wnd;
@@ -388,19 +391,8 @@ START_TEST(test_tcp_fast_rexmit_wraparound)
   struct test_tcp_counters counters;
   struct tcp_pcb* pcb;
   struct pbuf* p;
-  ip_addr_t remote_ip, local_ip, netmask;
-  u16_t remote_port = 0x100, local_port = 0x101;
   err_t err;
-#define SEQNO1 (0xFFFFFF00 - TCP_MSS)
-#define ISS    6510
   u16_t i, sent_total = 0;
-  u32_t seqnos[] = {
-    SEQNO1,
-    SEQNO1 + (1 * TCP_MSS),
-    SEQNO1 + (2 * TCP_MSS),
-    SEQNO1 + (3 * TCP_MSS),
-    SEQNO1 + (4 * TCP_MSS),
-    SEQNO1 + (5 * TCP_MSS)};
   LWIP_UNUSED_ARG(_i);
 
   for (i = 0; i < sizeof(tx_data); i++) {
@@ -408,20 +400,19 @@ START_TEST(test_tcp_fast_rexmit_wraparound)
   }
 
   /* initialize local vars */
-  IP_ADDR4(&local_ip,  192, 168,   1, 1);
-  IP_ADDR4(&remote_ip, 192, 168,   1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   memset(&counters, 0, sizeof(counters));
 
   /* create and initialize the pcb */
   tcp_ticks = SEQNO1 - ISS;
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
   pcb->mss = TCP_MSS;
   /* disable initial congestion window (we don't send a SYN here...) */
   pcb->cwnd = 2*TCP_MSS;
+  /* start in congestion advoidance */
+  pcb->ssthresh = pcb->cwnd;
 
   /* send 6 mss-sized segments */
   for (i = 0; i < 6; i++) {
@@ -442,7 +433,9 @@ START_TEST(test_tcp_fast_rexmit_wraparound)
   /* ACK the first segment */
   p = tcp_create_rx_segment(pcb, NULL, 0, 0, TCP_MSS, TCP_ACK);
   test_tcp_input(p, &netif);
-  /* ensure this didn't trigger a retransmission */
+  /* ensure this didn't trigger a retransmission. Only one
+  segment should be transmitted because cwnd opened up by
+  TCP_MSS and a fraction since we are in congestion avoidance */
   EXPECT(txcounters.num_tx_calls == 1);
   EXPECT(txcounters.num_tx_bytes == TCP_MSS + 40U);
   memset(&txcounters, 0, sizeof(txcounters));
@@ -484,19 +477,8 @@ START_TEST(test_tcp_rto_rexmit_wraparound)
   struct test_tcp_txcounters txcounters;
   struct test_tcp_counters counters;
   struct tcp_pcb* pcb;
-  ip_addr_t remote_ip, local_ip, netmask;
-  u16_t remote_port = 0x100, local_port = 0x101;
   err_t err;
-#define SEQNO1 (0xFFFFFF00 - TCP_MSS)
-#define ISS    6510
   u16_t i, sent_total = 0;
-  u32_t seqnos[] = {
-    SEQNO1,
-    SEQNO1 + (1 * TCP_MSS),
-    SEQNO1 + (2 * TCP_MSS),
-    SEQNO1 + (3 * TCP_MSS),
-    SEQNO1 + (4 * TCP_MSS),
-    SEQNO1 + (5 * TCP_MSS)};
   LWIP_UNUSED_ARG(_i);
 
   for (i = 0; i < sizeof(tx_data); i++) {
@@ -504,10 +486,7 @@ START_TEST(test_tcp_rto_rexmit_wraparound)
   }
 
   /* initialize local vars */
-  IP_ADDR4(&local_ip,  192, 168,   1, 1);
-  IP_ADDR4(&remote_ip, 192, 168,   1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   memset(&counters, 0, sizeof(counters));
 
   /* create and initialize the pcb */
@@ -516,7 +495,7 @@ START_TEST(test_tcp_rto_rexmit_wraparound)
   tcp_ticks = SEQNO1 - tcp_next_iss(NULL);
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
   pcb->mss = TCP_MSS;
   /* disable initial congestion window (we don't send a SYN here...) */
   pcb->cwnd = 2*TCP_MSS;
@@ -573,8 +552,6 @@ static void test_tcp_tx_full_window_lost(u8_t zero_window_probe_from_unsent)
   struct test_tcp_counters counters;
   struct tcp_pcb* pcb;
   struct pbuf *p;
-  ip_addr_t remote_ip, local_ip, netmask;
-  u16_t remote_port = 0x100, local_port = 0x101;
   err_t err;
   u16_t sent_total, i;
   u8_t expected = 0xFE;
@@ -593,17 +570,13 @@ static void test_tcp_tx_full_window_lost(u8_t zero_window_probe_from_unsent)
   }
 
   /* initialize local vars */
-  IP_ADDR4(&local_ip,  192, 168,   1, 1);
-  IP_ADDR4(&remote_ip, 192, 168,   1, 2);
-  IP_ADDR4(&netmask,   255, 255, 255, 0);
-  test_tcp_init_netif(&netif, &txcounters, &local_ip, &netmask);
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
   memset(&counters, 0, sizeof(counters));
-  memset(&txcounters, 0, sizeof(txcounters));
 
   /* create and initialize the pcb */
   pcb = test_tcp_new_counters_pcb(&counters);
   EXPECT_RET(pcb != NULL);
-  tcp_set_state(pcb, ESTABLISHED, &local_ip, &remote_ip, local_port, remote_port);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
   pcb->mss = TCP_MSS;
   /* disable initial congestion window (we don't send a SYN here...) */
   pcb->cwnd = pcb->snd_wnd;

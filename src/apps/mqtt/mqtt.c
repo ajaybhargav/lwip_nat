@@ -47,14 +47,18 @@
  * Erik Andersson <erian747@gmail.com>
  *
  */
-#include <string.h>
+#include "lwip/apps/mqtt.h"
 #include "lwip/timeouts.h"
 #include "lwip/ip_addr.h"
 #include "lwip/mem.h"
 #include "lwip/err.h"
 #include "lwip/pbuf.h"
-#include "lwip/tcp.h"
-#include "lwip/apps/mqtt.h"
+#include "lwip/altcp.h"
+#include "lwip/altcp_tcp.h"
+#include "lwip/altcp_tls.h"
+#include <string.h>
+
+#if LWIP_TCP && LWIP_CALLBACK_API
 
 /**
  * MQTT_DEBUG: Default is off.
@@ -69,7 +73,60 @@
 #define MQTT_DEBUG_WARN_STATE   (MQTT_DEBUG | LWIP_DBG_LEVEL_WARNING | LWIP_DBG_STATE)
 #define MQTT_DEBUG_SERIOUS      (MQTT_DEBUG | LWIP_DBG_LEVEL_SERIOUS)
 
-static void mqtt_cyclic_timer(void *arg);
+/**
+ * Pending request item, binds application callback to pending server requests
+ */
+struct mqtt_request_t
+{
+  /** Next item in list, NULL means this is the last in chain,
+      next pointing at itself means request is unallocated */
+  struct mqtt_request_t *next;
+  /** Callback to upper layer */
+  mqtt_request_cb_t cb;
+  void *arg;
+  /** MQTT packet identifier */
+  u16_t pkt_id;
+  /** Expire time relative to element before this  */
+  u16_t timeout_diff;
+};
+
+/** Ring buffer */
+struct mqtt_ringbuf_t {
+  u16_t put;
+  u16_t get;
+  u8_t buf[MQTT_OUTPUT_RINGBUF_SIZE];
+};
+
+/** MQTT client */
+struct mqtt_client_s
+{
+  /** Timers and timeouts */
+  u16_t cyclic_tick;
+  u16_t keep_alive;
+  u16_t server_watchdog;
+  /** Packet identifier generator*/
+  u16_t pkt_id_seq;
+  /** Packet identifier of pending incoming publish */
+  u16_t inpub_pkt_id;
+  /** Connection state */
+  u8_t conn_state;
+  struct altcp_pcb *conn;
+  /** Connection callback */
+  void *connect_arg;
+  mqtt_connection_cb_t connect_cb;
+  /** Pending requests to server */
+  struct mqtt_request_t *pend_req_queue;
+  struct mqtt_request_t req_list[MQTT_REQ_MAX_IN_FLIGHT];
+  void *inpub_arg;
+  /** Incoming data callback */
+  mqtt_incoming_data_cb_t data_cb;
+  mqtt_incoming_publish_cb_t pub_cb;
+  /** Input */
+  u32_t msg_idx;
+  u8_t rx_buffer[MQTT_VAR_HEADER_BUFFER_LEN];
+  /** Output ring-buffer */
+  struct mqtt_ringbuf_t output;
+};
 
 /**
  * MQTT client connection states
@@ -116,6 +173,8 @@ enum mqtt_connect_flag {
   MQTT_CONNECT_FLAG_CLEAN_SESSION = 1 << 1
 };
 
+
+static void mqtt_cyclic_timer(void *arg);
 
 #if defined(LWIP_DEBUG)
 static const char * const mqtt_message_type_str[15] =
@@ -200,12 +259,12 @@ msg_generate_packet_id(mqtt_client_t *client)
  * @param tpcb TCP connection handle
  */
 static void
-mqtt_output_send(struct mqtt_ringbuf_t *rb, struct tcp_pcb *tpcb)
+mqtt_output_send(struct mqtt_ringbuf_t *rb, struct altcp_pcb *tpcb)
 {
   err_t err;
   u8_t wrap = 0;
   u16_t ringbuf_lin_len = mqtt_ringbuf_linear_read_length(rb);
-  u16_t send_len = tcp_sndbuf(tpcb);
+  u16_t send_len = altcp_sndbuf(tpcb);
   LWIP_ASSERT("mqtt_output_send: tpcb != NULL", tpcb != NULL);
 
   if (send_len == 0 || ringbuf_lin_len == 0) {
@@ -221,18 +280,18 @@ mqtt_output_send(struct mqtt_ringbuf_t *rb, struct tcp_pcb *tpcb)
     /* Wrap around if more data in ring buffer after linear portion */
     wrap = (mqtt_ringbuf_len(rb) > ringbuf_lin_len);
   }
-  err = tcp_write(tpcb, mqtt_ringbuf_get_ptr(rb), send_len, TCP_WRITE_FLAG_COPY | (wrap ? TCP_WRITE_FLAG_MORE : 0));
+  err = altcp_write(tpcb, mqtt_ringbuf_get_ptr(rb), send_len, TCP_WRITE_FLAG_COPY | (wrap ? TCP_WRITE_FLAG_MORE : 0));
   if ((err == ERR_OK) && wrap) {
     mqtt_ringbuf_advance_get_idx(rb, send_len);
     /* Use the lesser one of ring buffer linear length and TCP send buffer size */
-    send_len = LWIP_MIN(tcp_sndbuf(tpcb), mqtt_ringbuf_linear_read_length(rb));
-    err = tcp_write(tpcb, mqtt_ringbuf_get_ptr(rb), send_len, TCP_WRITE_FLAG_COPY);
+    send_len = LWIP_MIN(altcp_sndbuf(tpcb), mqtt_ringbuf_linear_read_length(rb));
+    err = altcp_write(tpcb, mqtt_ringbuf_get_ptr(rb), send_len, TCP_WRITE_FLAG_COPY);
   }
 
   if (err == ERR_OK) {
     mqtt_ringbuf_advance_get_idx(rb, send_len);
     /* Flush */
-    tcp_output(tpcb);
+    altcp_output(tpcb);
   } else {
     LWIP_DEBUGF(MQTT_DEBUG_WARN, ("mqtt_output_send: Send failed with err %d (\"%s\")\n", err, lwip_strerr(err)));
   }
@@ -358,8 +417,9 @@ mqtt_take_request(struct mqtt_request_t **tail, u16_t pkt_id)
 static void
 mqtt_request_time_elapsed(struct mqtt_request_t **tail, u8_t t)
 {
-  struct mqtt_request_t *r = *tail;
+  struct mqtt_request_t *r;
   LWIP_ASSERT("mqtt_request_time_elapsed: tail != NULL", tail != NULL);
+  r = *tail;
   while (t > 0 && r != NULL) {
     if (t >= r->timeout_diff) {
       t -= (u8_t)r->timeout_diff;
@@ -507,12 +567,12 @@ mqtt_close(mqtt_client_t *client, mqtt_connection_status_t reason)
   /* Bring down TCP connection if not already done */
   if (client->conn != NULL) {
     err_t res;
-    tcp_recv(client->conn, NULL);
-    tcp_err(client->conn,  NULL);
-    tcp_sent(client->conn, NULL);
-    res = tcp_close(client->conn);
+    altcp_recv(client->conn, NULL);
+    altcp_err(client->conn,  NULL);
+    altcp_sent(client->conn, NULL);
+    res = altcp_close(client->conn);
     if (res != ERR_OK) {
-      tcp_abort(client->conn);
+      altcp_abort(client->conn);
       LWIP_DEBUGF(MQTT_DEBUG_TRACE,("mqtt_close: Close err=%s\n", lwip_strerr(res)));
     }
     client->conn = NULL;
@@ -854,7 +914,7 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
  * @return ERR_OK or err passed into callback
  */
 static err_t
-mqtt_tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+mqtt_tcp_recv_cb(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err)
 {
   mqtt_client_t *client = (mqtt_client_t *)arg;
   LWIP_ASSERT("mqtt_tcp_recv_cb: client != NULL", client != NULL);
@@ -872,7 +932,7 @@ mqtt_tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     }
 
     /* Tell remote that data has been received */
-    tcp_recved(pcb, p->tot_len);
+    altcp_recved(pcb, p->tot_len);
     res = mqtt_parse_incoming(client, p);
     pbuf_free(p);
 
@@ -898,7 +958,7 @@ mqtt_tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
  * @return ERR_OK
  */
 static err_t
-mqtt_tcp_sent_cb(void *arg, struct tcp_pcb *tpcb, u16_t len)
+mqtt_tcp_sent_cb(void *arg, struct altcp_pcb *tpcb, u16_t len)
 {
   mqtt_client_t *client = (mqtt_client_t *)arg;
 
@@ -949,7 +1009,7 @@ mqtt_tcp_err_cb(void *arg, err_t err)
  * @return err ERR_OK
  */
 static err_t
-mqtt_tcp_poll_cb(void *arg, struct tcp_pcb *tpcb)
+mqtt_tcp_poll_cb(void *arg, struct altcp_pcb *tpcb)
 {
   mqtt_client_t *client = (mqtt_client_t *)arg;
   if (client->conn_state == MQTT_CONNECTED) {
@@ -966,7 +1026,7 @@ mqtt_tcp_poll_cb(void *arg, struct tcp_pcb *tpcb)
  * @return ERR_OK
  */
 static err_t
-mqtt_tcp_connect_cb(void *arg, struct tcp_pcb *tpcb, err_t err)
+mqtt_tcp_connect_cb(void *arg, struct altcp_pcb *tpcb, err_t err)
 {
   mqtt_client_t* client = (mqtt_client_t *)arg;
 
@@ -979,9 +1039,9 @@ mqtt_tcp_connect_cb(void *arg, struct tcp_pcb *tpcb, err_t err)
   client->msg_idx = 0;
 
   /* Setup TCP callbacks */
-  tcp_recv(tpcb, mqtt_tcp_recv_cb);
-  tcp_sent(tpcb, mqtt_tcp_sent_cb);
-  tcp_poll(tpcb, mqtt_tcp_poll_cb, 2);
+  altcp_recv(tpcb, mqtt_tcp_recv_cb);
+  altcp_sent(tpcb, mqtt_tcp_sent_cb);
+  altcp_poll(tpcb, mqtt_tcp_poll_cb, 2);
 
   LWIP_DEBUGF(MQTT_DEBUG_TRACE,("mqtt_tcp_connect_cb: TCP connection established to server\n"));
   /* Enter MQTT connect state */
@@ -1204,6 +1264,7 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
   /* Length is the sum of 2+"MQTT", protocol level, flags and keep alive */
   u16_t remaining_length = 2 + 4 + 1 + 1 + 2;
   u8_t flags = 0, will_topic_len = 0, will_msg_len = 0;
+  u8_t client_user_len = 0, client_pass_len = 0;
 
   LWIP_ASSERT("mqtt_client_connect: client != NULL", client != NULL);
   LWIP_ASSERT("mqtt_client_connect: ip_addr != NULL", ip_addr != NULL);
@@ -1240,6 +1301,26 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
     LWIP_ERROR("mqtt_client_connect: remaining_length overflow", len <= 0xFFFF, return ERR_VAL);
     remaining_length = (u16_t)len;
   }
+  if (client_info->client_user != NULL) {
+    flags |= MQTT_CONNECT_FLAG_USERNAME;
+    len = strlen(client_info->client_user);
+    LWIP_ERROR("mqtt_client_connect: client_info->client_user length overflow", len <= 0xFF, return ERR_VAL);
+    LWIP_ERROR("mqtt_client_connect: client_info->client_user length must be > 0", len > 0, return ERR_VAL);
+    client_user_len = (u8_t)len;
+    len = remaining_length + 2 + client_user_len;
+    LWIP_ERROR("mqtt_client_connect: remaining_length overflow", len <= 0xFFFF, return ERR_VAL);
+    remaining_length = (u16_t)len;
+  }
+  if (client_info->client_pass != NULL) {
+    flags |= MQTT_CONNECT_FLAG_PASSWORD;
+    len = strlen(client_info->client_pass);
+    LWIP_ERROR("mqtt_client_connect: client_info->client_pass length overflow", len <= 0xFF, return ERR_VAL);
+    LWIP_ERROR("mqtt_client_connect: client_info->client_pass length must be > 0", len > 0, return ERR_VAL);
+    client_pass_len = (u8_t)len;
+    len = remaining_length + 2 + client_pass_len;
+    LWIP_ERROR("mqtt_client_connect: remaining_length overflow", len <= 0xFFFF, return ERR_VAL);
+    remaining_length = (u16_t)len;
+  }
 
   /* Don't complicate things, always connect using clean session */
   flags |= MQTT_CONNECT_FLAG_CLEAN_SESSION;
@@ -1255,15 +1336,25 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
     return ERR_MEM;
   }
 
-  client->conn = tcp_new();
+  client->conn = altcp_tcp_new();
   if (client->conn == NULL) {
     return ERR_MEM;
   }
+#if LWIP_ALTCP && LWIP_ALTCP_TLS
+  if (client_info->tls_config) {
+    struct altcp_pcb *pcb_tls = altcp_tls_new(client_info->tls_config, client->conn);
+    if (pcb_tls == NULL) {
+      altcp_close(client->conn);
+      return ERR_MEM;
+    }
+    client->conn = pcb_tls;
+  }
+#endif
 
   /* Set arg pointer for callbacks */
-  tcp_arg(client->conn, client);
+  altcp_arg(client->conn, client);
   /* Any local address, pick random local port number */
-  err = tcp_bind(client->conn, IP_ADDR_ANY, 0);
+  err = altcp_bind(client->conn, IP_ADDR_ANY, 0);
   if (err != ERR_OK) {
     LWIP_DEBUGF(MQTT_DEBUG_WARN,("mqtt_client_connect: Error binding to local ip/port, %d\n", err));
     goto tcp_fail;
@@ -1271,13 +1362,13 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
   LWIP_DEBUGF(MQTT_DEBUG_TRACE,("mqtt_client_connect: Connecting to host: %s at port:%"U16_F"\n", ipaddr_ntoa(ip_addr), port));
 
   /* Connect to server */
-  err = tcp_connect(client->conn, ip_addr, port, mqtt_tcp_connect_cb);
+  err = altcp_connect(client->conn, ip_addr, port, mqtt_tcp_connect_cb);
   if (err != ERR_OK) {
     LWIP_DEBUGF(MQTT_DEBUG_TRACE,("mqtt_client_connect: Error connecting to remote ip/port, %d\n", err));
     goto tcp_fail;
   }
   /* Set error callback */
-  tcp_err(client->conn, mqtt_tcp_err_cb);
+  altcp_err(client->conn, mqtt_tcp_err_cb);
   client->conn_state = TCP_CONNECTING;
 
   /* Append fixed header */
@@ -1297,10 +1388,18 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
     mqtt_output_append_string(&client->output, client_info->will_topic, will_topic_len);
     mqtt_output_append_string(&client->output, client_info->will_msg, will_msg_len);
   }
+  /* Append user name if given */
+  if ((flags & MQTT_CONNECT_FLAG_USERNAME) != 0) {
+    mqtt_output_append_string(&client->output, client_info->client_user, client_user_len);
+  }
+  /* Append password if given */
+  if ((flags & MQTT_CONNECT_FLAG_PASSWORD) != 0) {
+    mqtt_output_append_string(&client->output, client_info->client_pass, client_pass_len);
+  }
   return ERR_OK;
 
 tcp_fail:
-  tcp_abort(client->conn);
+  altcp_abort(client->conn);
   client->conn = NULL;
   return err;
 }
@@ -1335,3 +1434,5 @@ mqtt_client_is_connected(mqtt_client_t *client)
   LWIP_ASSERT("mqtt_client_is_connected: client != NULL", client);
   return client->conn_state == MQTT_CONNECTED;
 }
+
+#endif /* LWIP_TCP && LWIP_CALLBACK_API */

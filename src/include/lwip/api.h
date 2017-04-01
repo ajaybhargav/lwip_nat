@@ -58,11 +58,12 @@ extern "C" {
  */
 
 /* Flags for netconn_write (u8_t) */
-#define NETCONN_NOFLAG    0x00
-#define NETCONN_NOCOPY    0x00 /* Only for source code compatibility */
-#define NETCONN_COPY      0x01
-#define NETCONN_MORE      0x02
-#define NETCONN_DONTBLOCK 0x04
+#define NETCONN_NOFLAG      0x00
+#define NETCONN_NOCOPY      0x00 /* Only for source code compatibility */
+#define NETCONN_COPY        0x01
+#define NETCONN_MORE        0x02
+#define NETCONN_DONTBLOCK   0x04
+#define NETCONN_NOAUTORCVD  0x08 /* prevent netconn_recv_data_tcp() from updating the tcp window - must be done manually via netconn_tcp_recvd() */
 
 /* Flags for struct netconn.flags (u8_t) */
 /** Should this netconn avoid blocking? */
@@ -259,15 +260,17 @@ struct netconn {
   u8_t flags;
 #if LWIP_TCP
   /** TCP: when data passed to netconn_write doesn't fit into the send buffer,
-      this temporarily stores how much is already sent. */
-  size_t write_offset;
-  /** TCP: when data passed to netconn_write doesn't fit into the send buffer,
       this temporarily stores the message.
       Also used during connect and close. */
   struct api_msg *current_msg;
 #endif /* LWIP_TCP */
   /** A callback function that is informed about events for this netconn */
   netconn_callback callback;
+};
+
+struct netvector {
+  const void *ptr;
+  size_t len;
 };
 
 /** Register an Network connection event */
@@ -313,12 +316,18 @@ err_t   netconn_listen_with_backlog(struct netconn *conn, u8_t backlog);
 #define netconn_listen(conn) netconn_listen_with_backlog(conn, TCP_DEFAULT_LISTEN_BACKLOG)
 err_t   netconn_accept(struct netconn *conn, struct netconn **new_conn);
 err_t   netconn_recv(struct netconn *conn, struct netbuf **new_buf);
+err_t   netconn_recv_udp_raw_netbuf(struct netconn *conn, struct netbuf **new_buf);
+err_t   netconn_recv_udp_raw_netbuf_flags(struct netconn *conn, struct netbuf **new_buf, u8_t apiflags);
 err_t   netconn_recv_tcp_pbuf(struct netconn *conn, struct pbuf **new_buf);
+err_t   netconn_recv_tcp_pbuf_flags(struct netconn *conn, struct pbuf **new_buf, u8_t apiflags);
+err_t   netconn_tcp_recvd(struct netconn *conn, u32_t len);
 err_t   netconn_sendto(struct netconn *conn, struct netbuf *buf,
                              const ip_addr_t *addr, u16_t port);
 err_t   netconn_send(struct netconn *conn, struct netbuf *buf);
 err_t   netconn_write_partly(struct netconn *conn, const void *dataptr, size_t size,
                              u8_t apiflags, size_t *bytes_written);
+err_t   netconn_write_vectors_partly(struct netconn *conn, struct netvector *vectors, u16_t vectorcnt,
+                                     u8_t apiflags, size_t *bytes_written);
 /** @ingroup netconn_tcp */
 #define netconn_write(conn, dataptr, size, apiflags) \
           netconn_write_partly(conn, dataptr, size, apiflags, NULL)

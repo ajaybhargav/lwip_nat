@@ -5,6 +5,24 @@ HISTORY
   * [Enter new changes just after this line - do not remove this line]
 
   ++ New features:
+
+  2017-03-02: Simon Goldschmidt
+  * netconn: added nonblocking accept/recv to netconn API (task #14396)
+
+  2017-02-28: Simon Goldschmidt
+  * Added LWIP_SINGLE_NETIF for small targets with only one netif
+
+  2017-02-17: Simon Goldschmidt
+  * Improved DNS_LOCAL_HOSTLIST interface
+
+  2017-02-10: David van Moolenbroek
+  * Implement UDP and RAW multicast support for IPv6 (core API, not netconn/sockets)
+
+  2017-02-10: Simon Goldschmidt
+  * tcp_close does not fail on memory error (instead, FIN is sent from tcp_tmr)
+
+  2017-02-04: David van Moolenbroek
+    - IPv6 scopes support
   
   2017-01-08: David van Moolenbroek
   * Extensions to RAW API (patch #9208)
@@ -13,6 +31,22 @@ HISTORY
     - Support IP_HDRINCL socket option
 
   ++ Bugfixes:
+
+  2017-03-01: Simon Goldschmidt
+  * httpd: LWIP_HTTPD_POST_MANUAL_WND: fixed double-free when httpd_post_data_recved
+    is called nested from httpd_post_receive_data() (bug #50424)
+
+  2017-02-28: David van Moolenbroek/Simon Goldschmidt
+  * tcp: fixed bug #50418: LWIP_EVENT_API: fix invalid calbacks for SYN_RCVD pcb
+
+  2017-02-24: Simon Goldschmidt
+  * sockets.c: fixed close race conditions in lwip_select (for LWIP_NETCONN_FULLDUPLEX)
+
+  2017-02-24: Simon Goldschmidt
+  * sockets.c: fixed that select ignored invalid/not open sockets in the fd_sets (bug #50392)
+
+  2017-02-16: Simon Goldschmidt
+  * LWIP_NETCONN_FULLDUPLEX: fixed shutdown during write (bug #50274)
 
   2017-01-18: Dirk Ziegelmeier
   * Fix zero-copy RX, see bug bug #50064. PBUF_REFs were not supported as ARP requests.

@@ -376,6 +376,9 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
 #if TCP_OVERSIZE
   u16_t oversize = 0;
   u16_t oversize_used = 0;
+#if TCP_OVERSIZE_DBGCHECK
+  u16_t oversize_add = 0;
+#endif /* TCP_OVERSIZE_DBGCHECK*/
 #endif /* TCP_OVERSIZE */
   u16_t extendlen = 0;
 #if TCP_CHECKSUM_ON_COPY
@@ -505,7 +508,7 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
           goto memerr;
         }
 #if TCP_OVERSIZE_DBGCHECK
-        last_unsent->oversize_left += oversize;
+        oversize_add = oversize;
 #endif /* TCP_OVERSIZE_DBGCHECK */
         TCP_DATA_COPY2(concat_p->payload, (const u8_t*)arg + pos, seglen, &concat_chksum, &concat_chksum_swapped);
 #if TCP_CHECKSUM_ON_COPY
@@ -656,6 +659,11 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
    * All three segmentation phases were successful. We can commit the
    * transaction.
    */
+#if TCP_OVERSIZE_DBGCHECK
+  if ((last_unsent != NULL) && (oversize_add != 0)) {
+    last_unsent->oversize_left += oversize_add;
+  }
+#endif /* TCP_OVERSIZE_DBGCHECK */
 
   /*
    * Phase 1: If data has been added to the preallocated tail of
@@ -1014,9 +1022,9 @@ tcp_output(struct tcp_pcb *pcb)
    *
    * If data is to be sent, we will just piggyback the ACK (see below).
    */
-  if (pcb->flags & TF_ACK_NOW &&
-     (seg == NULL ||
-      lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len > wnd)) {
+  if ((pcb->flags & TF_ACK_NOW) &&
+      (seg == NULL ||
+       lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len > wnd)) {
      return tcp_send_empty_ack(pcb);
   }
 
@@ -1216,7 +1224,7 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
   if (seg->flags & TF_SEG_OPTS_MSS) {
     u16_t mss;
 #if TCP_CALCULATE_EFF_SEND_MSS
-    mss = tcp_eff_send_mss(TCP_MSS, &pcb->local_ip, &pcb->remote_ip);
+    mss = tcp_eff_send_mss_netif(TCP_MSS, netif, &pcb->remote_ip);
 #else /* TCP_CALCULATE_EFF_SEND_MSS */
     mss = TCP_MSS;
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
@@ -1412,7 +1420,9 @@ tcp_rexmit_rto(struct tcp_pcb *pcb)
   pcb->unacked = NULL;
 
   /* increment number of retransmissions */
-  ++pcb->nrtx;
+  if (pcb->nrtx < 0xFF) {
+    ++pcb->nrtx;
+  }
 
   /* Don't take any RTT measurements after retransmitting. */
   pcb->rttest = 0;
@@ -1457,7 +1467,9 @@ tcp_rexmit(struct tcp_pcb *pcb)
   }
 #endif /* TCP_OVERSIZE */
 
-  ++pcb->nrtx;
+  if (pcb->nrtx < 0xFF) {
+    ++pcb->nrtx;
+  }
 
   /* Don't take any rtt measurements after retransmitting. */
   pcb->rttest = 0;

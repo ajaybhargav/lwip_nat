@@ -11,7 +11,7 @@
  * Sequential-style APIs, blocking functions. More overhead, but can be called
  * from any thread except TCPIP thread.
  * 
- * @defgroup addons Addons
+ * @defgroup netifs NETIFs
  * 
  * @defgroup apps Applications
  */
@@ -24,6 +24,11 @@
 /**
  * @page upgrading Upgrading
  * @verbinclude "UPGRADING"
+ */
+
+/**
+ * @page changelog Changelog
+ * @verbinclude "CHANGELOG"
  */
 
 /**

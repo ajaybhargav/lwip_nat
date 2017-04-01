@@ -46,8 +46,10 @@
  */
 
 /** SNTP macro to change system time in seconds
- * Define SNTP_SET_SYSTEM_TIME_US(sec, us) to set the time in microseconds instead of this one
- * if you need the additional precision.
+ * Define SNTP_SET_SYSTEM_TIME_US(sec, us) to set the time in microseconds
+ * instead of this one if you need the additional precision. Alternatively,
+ * define SNTP_SET_SYSTEM_TIME_NTP(sec, frac) in order to work with native
+ * NTP timestamps instead.
  */
 #if !defined SNTP_SET_SYSTEM_TIME || defined __DOXYGEN__
 #define SNTP_SET_SYSTEM_TIME(sec)   LWIP_UNUSED_ARG(sec)
@@ -107,6 +109,30 @@
 #define SNTP_CHECK_RESPONSE         0
 #endif
 
+/** Enable round-trip delay compensation.
+ * Compensate for the round-trip delay by calculating the clock offset from
+ * the originate, receive, transmit and destination timestamps, as per RFC.
+ *
+ * The calculation requires compiler support for 64-bit integers. Also, either
+ * SNTP_SET_SYSTEM_TIME_US or SNTP_SET_SYSTEM_TIME_NTP has to be implemented
+ * for setting the system clock with sub-second precision. Likewise, either
+ * SNTP_GET_SYSTEM_TIME or SNTP_GET_SYSTEM_TIME_NTP needs to be implemented
+ * with sub-second precision.
+ *
+ * Although not strictly required, it makes sense to combine this option with
+ * SNTP_CHECK_RESPONSE >= 2 for sanity-checking of the received timestamps.
+ * Also, in order for the round-trip calculation to work, the difference
+ * between the local clock and the NTP server clock must not be larger than
+ * about 34 years. If that limit is exceeded, the implementation will fall back
+ * to setting the clock without compensation. In order to ensure that the local
+ * clock is always within the permitted range for compensation, even at first
+ * try, it may be necessary to store at least the current year in non-volatile
+ * memory.
+ */
+#if !defined SNTP_COMP_ROUNDTRIP || defined __DOXYGEN__
+#define SNTP_COMP_ROUNDTRIP         0
+#endif
+
 /** According to the RFC, this shall be a random delay
  * between 1 and 5 minutes (in milliseconds) to prevent load peaks.
  * This can be defined to a random generation function,
@@ -140,7 +166,10 @@
 #endif
 
 /** SNTP macro to get system time, used with SNTP_CHECK_RESPONSE >= 2
- * to send in request and compare in response.
+ * to send in request and compare in response. Also used for round-trip
+ * delay compensation if SNTP_COMP_ROUNDTRIP != 0.
+ * Alternatively, define SNTP_GET_SYSTEM_TIME_NTP(sec, frac) in order to
+ * work with native NTP timestamps instead.
  */
 #if !defined SNTP_GET_SYSTEM_TIME || defined __DOXYGEN__
 #define SNTP_GET_SYSTEM_TIME(sec, us)     do { (sec) = 0; (us) = 0; } while(0)

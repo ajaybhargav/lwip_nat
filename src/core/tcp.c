@@ -62,6 +62,10 @@
 
 #include <string.h>
 
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
+
 #ifndef TCP_LOCAL_PORT_RANGE_START
 /* From http://www.iana.org/assignments/port-numbers:
    "The Dynamic and/or Private Ports are those from 49152 through 65535" */
@@ -132,15 +136,17 @@ static u8_t tcp_timer;
 static u8_t tcp_timer_ctr;
 static u16_t tcp_new_port(void);
 
+static err_t tcp_close_shutdown_fin(struct tcp_pcb *pcb);
+
 /**
  * Initialize this module.
  */
 void
 tcp_init(void)
 {
-#if LWIP_RANDOMIZE_INITIAL_LOCAL_PORTS && defined(LWIP_RAND)
+#ifdef LWIP_RAND
   tcp_port = TCP_ENSURE_LOCAL_PORT_RANGE(LWIP_RAND());
-#endif /* LWIP_RANDOMIZE_INITIAL_LOCAL_PORTS && defined(LWIP_RAND) */
+#endif /* LWIP_RAND */
 }
 
 /**
@@ -258,8 +264,6 @@ tcp_backlog_accepted(struct tcp_pcb* pcb)
 static err_t
 tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
 {
-  err_t err;
-
   if (rst_on_unacked_data && ((pcb->state == ESTABLISHED) || (pcb->state == CLOSE_WAIT))) {
     if ((pcb->refused_data != NULL) || (pcb->rcv_wnd != TCP_WND_MAX(pcb))) {
       /* Not all data received by application, send RST to tell the remote
@@ -290,6 +294,8 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
     }
   }
 
+  /* - states which free the pcb are handled here,
+     - states which send FIN and change state are handled in tcp_close_shutdown_fin() */
   switch (pcb->state) {
   case CLOSED:
     /* Closing a pcb in the CLOSED state might seem erroneous,
@@ -299,27 +305,34 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
      * or for a pcb that has been used and then entered the CLOSED state
      * is erroneous, but this should never happen as the pcb has in those cases
      * been freed, and so any remaining handles are bogus. */
-    err = ERR_OK;
     if (pcb->local_port != 0) {
       TCP_RMV(&tcp_bound_pcbs, pcb);
     }
     memp_free(MEMP_TCP_PCB, pcb);
-    pcb = NULL;
     break;
   case LISTEN:
-    err = ERR_OK;
     tcp_listen_closed(pcb);
     tcp_pcb_remove(&tcp_listen_pcbs.pcbs, pcb);
     memp_free(MEMP_TCP_PCB_LISTEN, pcb);
-    pcb = NULL;
     break;
   case SYN_SENT:
-    err = ERR_OK;
     TCP_PCB_REMOVE_ACTIVE(pcb);
     memp_free(MEMP_TCP_PCB, pcb);
-    pcb = NULL;
     MIB2_STATS_INC(mib2.tcpattemptfails);
     break;
+  default:
+    return tcp_close_shutdown_fin(pcb);
+  }
+  return ERR_OK;
+}
+
+static err_t
+tcp_close_shutdown_fin(struct tcp_pcb *pcb)
+{
+  err_t err;
+  LWIP_ASSERT("pcb != NULL", pcb != NULL);
+
+  switch (pcb->state) {
   case SYN_RCVD:
     err = tcp_send_fin(pcb);
     if (err == ERR_OK) {
@@ -344,18 +357,20 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
     break;
   default:
     /* Has already been closed, do nothing. */
-    err = ERR_OK;
-    pcb = NULL;
+    return ERR_OK;
     break;
   }
 
-  if (pcb != NULL && err == ERR_OK) {
+  if (err == ERR_OK) {
     /* To ensure all data has been sent when tcp_close returns, we have
        to make sure tcp_output doesn't fail.
        Since we don't really have to ensure all data has been sent when tcp_close
        returns (unsent data is sent from tcp timer functions, also), we don't care
        for the return value of tcp_output for now. */
     tcp_output(pcb);
+  } else if (err == ERR_MEM) {
+    /* Mark this pcb for closing. Closing is retried from tcp_tmr. */
+    pcb->flags |= TF_CLOSEPEND;
   }
   return err;
 }
@@ -467,6 +482,7 @@ tcp_abandon(struct tcp_pcb *pcb, int reset)
   } else {
     int send_rst = 0;
     u16_t local_port = 0;
+    enum tcp_state last_state;
     seqno = pcb->snd_nxt;
     ackno = pcb->rcv_nxt;
 #if LWIP_CALLBACK_API
@@ -499,8 +515,9 @@ tcp_abandon(struct tcp_pcb *pcb, int reset)
       LWIP_DEBUGF(TCP_RST_DEBUG, ("tcp_abandon: sending RST\n"));
       tcp_rst(seqno, ackno, &pcb->local_ip, &pcb->remote_ip, local_port, pcb->remote_port);
     }
+    last_state = pcb->state;
     memp_free(MEMP_TCP_PCB, pcb);
-    TCP_EVENT_ERR(errf, errf_arg, ERR_ABRT);
+    TCP_EVENT_ERR(last_state, errf, errf_arg, ERR_ABRT);
   }
 }
 
@@ -542,6 +559,9 @@ tcp_bind(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
   int i;
   int max_pcb_list = NUM_TCP_PCB_LISTS;
   struct tcp_pcb *cpcb;
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  ip_addr_t zoned_ipaddr;
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
 
 #if LWIP_IPV4
   /* Don't propagate NULL pointer (IPv4 ANY) to subsequent functions */
@@ -551,7 +571,7 @@ tcp_bind(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 #endif /* LWIP_IPV4 */
 
   /* still need to check for ipaddr == NULL in IPv6 only case */
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
 
@@ -567,6 +587,18 @@ tcp_bind(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
     max_pcb_list = NUM_TCP_PCB_LISTS_NO_TIME_WAIT;
   }
 #endif /* SO_REUSE */
+
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now.
+   * This is legacy support: scope-aware callers should always provide properly
+   * zoned source addresses. Do the zone selection before the address-in-use
+   * check below; as such we have to make a temporary copy of the address. */
+  if (IP_IS_V6(ipaddr) && ip6_addr_lacks_zone(ip_2_ip6(ipaddr), IP6_UNICAST)) {
+    ip_addr_copy(zoned_ipaddr, *ipaddr);
+    ip6_addr_select_zone(ip_2_ip6(&zoned_ipaddr), ip_2_ip6(&zoned_ipaddr));
+    ipaddr = &zoned_ipaddr;
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
 
   if (port == 0) {
     port = tcp_new_port();
@@ -855,11 +887,12 @@ err_t
 tcp_connect(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port,
       tcp_connected_fn connected)
 {
+  struct netif *netif = NULL;
   err_t ret;
   u32_t iss;
   u16_t old_local_port;
 
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
 
@@ -872,7 +905,6 @@ tcp_connect(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port,
   /* check if we have a route to the remote host */
   if (ip_addr_isany(&pcb->local_ip)) {
     /* no local IP address set, yet. */
-    struct netif *netif;
     const ip_addr_t *local_ip;
     ip_route_get_local_ip(&pcb->local_ip, &pcb->remote_ip, netif, local_ip);
     if ((netif == NULL) || (local_ip == NULL)) {
@@ -882,7 +914,24 @@ tcp_connect(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port,
     }
     /* Use the address as local address of the pcb. */
     ip_addr_copy(pcb->local_ip, *local_ip);
+  } else {
+    netif = ip_route(&pcb->local_ip, &pcb->remote_ip);
+    if (netif == NULL) {
+      /* Don't even try to send a SYN packet if we have no route
+         since that will fail. */
+      return ERR_RTE;
+    }
   }
+  LWIP_ASSERT("netif != NULL", netif != NULL);
+
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now.
+   * Given that we already have the target netif, this is easy and cheap. */
+  if (IP_IS_V6(&pcb->remote_ip) &&
+      ip6_addr_lacks_zone(ip_2_ip6(&pcb->remote_ip), IP6_UNICAST)) {
+    ip6_addr_assign_zone(ip_2_ip6(&pcb->remote_ip), IP6_UNICAST, netif);
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
 
   old_local_port = pcb->local_port;
   if (pcb->local_port == 0) {
@@ -928,10 +977,9 @@ tcp_connect(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port,
      The send MSS is updated when an MSS option is received. */
   pcb->mss = INITIAL_MSS;
 #if TCP_CALCULATE_EFF_SEND_MSS
-  pcb->mss = tcp_eff_send_mss(pcb->mss, &pcb->local_ip, &pcb->remote_ip);
+  pcb->mss = tcp_eff_send_mss_netif(pcb->mss, netif, &pcb->remote_ip);
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
   pcb->cwnd = 1;
-  pcb->ssthresh = TCP_WND;
 #if LWIP_CALLBACK_API
   pcb->connected = connected;
 #else /* LWIP_CALLBACK_API */
@@ -997,11 +1045,11 @@ tcp_slowtmr_start:
     pcb_remove = 0;
     pcb_reset = 0;
 
-    if (pcb->state == SYN_SENT && pcb->nrtx == TCP_SYNMAXRTX) {
+    if (pcb->state == SYN_SENT && pcb->nrtx >= TCP_SYNMAXRTX) {
       ++pcb_remove;
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_slowtmr: max SYN retries reached\n"));
     }
-    else if (pcb->nrtx == TCP_MAXRTX) {
+    else if (pcb->nrtx >= TCP_MAXRTX) {
       ++pcb_remove;
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_slowtmr: max DATA retries reached\n"));
     } else {
@@ -1035,7 +1083,8 @@ tcp_slowtmr_start:
           /* Double retransmission time-out unless we are trying to
            * connect to somebody (i.e., we are in SYN_SENT). */
           if (pcb->state != SYN_SENT) {
-            pcb->rto = ((pcb->sa >> 3) + pcb->sv) << tcp_backoff[pcb->nrtx];
+            u8_t backoff_idx = LWIP_MIN(pcb->nrtx, sizeof(tcp_backoff)-1);
+            pcb->rto = ((pcb->sa >> 3) + pcb->sv) << tcp_backoff[backoff_idx];
           }
 
           /* Reset the retransmission timer. */
@@ -1132,6 +1181,7 @@ tcp_slowtmr_start:
       tcp_err_fn err_fn = pcb->errf;
 #endif /* LWIP_CALLBACK_API */
       void *err_arg;
+      enum tcp_state last_state;
       tcp_pcb_purge(pcb);
       /* Remove PCB from tcp_active_pcbs list. */
       if (prev != NULL) {
@@ -1149,12 +1199,13 @@ tcp_slowtmr_start:
       }
 
       err_arg = pcb->callback_arg;
+      last_state = pcb->state;
       pcb2 = pcb;
       pcb = pcb->next;
       memp_free(MEMP_TCP_PCB, pcb2);
 
       tcp_active_pcbs_changed = 0;
-      TCP_EVENT_ERR(err_fn, err_arg, ERR_ABRT);
+      TCP_EVENT_ERR(last_state, err_fn, err_arg, ERR_ABRT);
       if (tcp_active_pcbs_changed) {
         goto tcp_slowtmr_start;
       }
@@ -1244,6 +1295,12 @@ tcp_fasttmr_start:
         tcp_output(pcb);
         pcb->flags &= ~(TF_ACK_DELAY | TF_ACK_NOW);
       }
+      /* send pending FIN */
+      if (pcb->flags & TF_CLOSEPEND) {
+        LWIP_DEBUGF(TCP_DEBUG, ("tcp_fasttmr: pending FIN\n"));
+        pcb->flags &= ~(TF_CLOSEPEND);
+        tcp_close_shutdown_fin(pcb);
+      }
 
       next = pcb->next;
 
@@ -1301,7 +1358,7 @@ tcp_process_refused_data(struct tcp_pcb *pcb)
     TCP_EVENT_RECV(pcb, refused_data, ERR_OK, err);
     if (err == ERR_OK) {
       /* did refused_data include a FIN? */
-      if (refused_flags & PBUF_FLAG_TCP_FIN
+      if ((refused_flags & PBUF_FLAG_TCP_FIN)
 #if TCP_QUEUE_OOSEQ && LWIP_WND_SCALE
           && (rest == NULL)
 #endif /* TCP_QUEUE_OOSEQ && LWIP_WND_SCALE */
@@ -1371,6 +1428,7 @@ tcp_seg_free(struct tcp_seg *seg)
 }
 
 /**
+ * @ingroup tcp
  * Sets the priority of a connection.
  *
  * @param pcb the tcp_pcb to manipulate
@@ -1589,6 +1647,14 @@ tcp_alloc(u8_t prio)
     pcb->cwnd = 1;
     pcb->tmr = tcp_ticks;
     pcb->last_timer = tcp_timer_ctr;
+
+    /* RFC 5681 recommends setting ssthresh abritrarily high and gives an example
+    of using the largest advertised receive window.  We've seen complications with
+    receiving TCPs that use window scaling and/or window auto-tuning where the
+    initial advertised window is very small and then grows rapidly once the
+    connection is established. To avoid these complications, we set ssthresh to the
+    largest effective cwnd (amount of in-flight data) that the sender can have. */
+    pcb->ssthresh = TCP_SND_BUF;
 
 #if LWIP_CALLBACK_API
     pcb->recv = tcp_recv_null;
@@ -1826,9 +1892,9 @@ tcp_pcb_remove(struct tcp_pcb **pcblist, struct tcp_pcb *pcb)
   tcp_pcb_purge(pcb);
 
   /* if there is an outstanding delayed ACKs, send it */
-  if (pcb->state != TIME_WAIT &&
-     pcb->state != LISTEN &&
-     pcb->flags & TF_ACK_DELAY) {
+  if ((pcb->state != TIME_WAIT) &&
+      (pcb->state != LISTEN) &&
+      (pcb->flags & TF_ACK_DELAY)) {
     pcb->flags |= TF_ACK_NOW;
     tcp_output(pcb);
   }
@@ -1871,21 +1937,17 @@ tcp_next_iss(struct tcp_pcb *pcb)
 #if TCP_CALCULATE_EFF_SEND_MSS
 /**
  * Calculates the effective send mss that can be used for a specific IP address
- * by using ip_route to determine the netif used to send to the address and
- * calculating the minimum of TCP_MSS and that netif's mtu (if set).
+ * by calculating the minimum of TCP_MSS and the mtu (if set) of the target
+ * netif (if not NULL).
  */
 u16_t
-tcp_eff_send_mss_impl(u16_t sendmss, const ip_addr_t *dest
-#if LWIP_IPV6 || LWIP_IPV4_SRC_ROUTING
-                     , const ip_addr_t *src
-#endif /* LWIP_IPV6 || LWIP_IPV4_SRC_ROUTING */
-                     )
+tcp_eff_send_mss_netif(u16_t sendmss, struct netif *outif, const ip_addr_t *dest)
 {
   u16_t mss_s;
-  struct netif *outif;
   s16_t mtu;
 
-  outif = ip_route(src, dest);
+  LWIP_UNUSED_ARG(dest); /* in case IPv6 is disabled */
+  
 #if LWIP_IPV6
 #if LWIP_IPV4
   if (IP_IS_V6(dest))
@@ -1992,6 +2054,30 @@ const char*
 tcp_debug_state_str(enum tcp_state s)
 {
   return tcp_state_str[s];
+}
+
+err_t
+tcp_tcp_get_tcp_addrinfo(struct tcp_pcb *pcb, int local, ip_addr_t *addr, u16_t *port)
+{
+  if (pcb) {
+    if (local) {
+      if (addr) {
+        *addr = pcb->local_ip;
+      }
+      if (port) {
+        *port = pcb->local_port;
+      }
+    } else {
+      if (addr) {
+        *addr = pcb->remote_ip;
+      }
+      if (port) {
+        *port = pcb->remote_port;
+      }
+    }
+    return ERR_OK;
+  }
+  return ERR_VAL;
 }
 
 #if TCP_DEBUG || TCP_INPUT_DEBUG || TCP_OUTPUT_DEBUG

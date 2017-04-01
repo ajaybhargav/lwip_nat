@@ -364,9 +364,9 @@ autoip_stop(struct netif *netif)
 void
 autoip_tmr(void)
 {
-  struct netif *netif = netif_list;
+  struct netif *netif;
   /* loop through netif's */
-  while (netif != NULL) {
+  NETIF_FOREACH(netif) {
     struct autoip* autoip = netif_autoip_data(netif);
     /* only act on AutoIP configured interfaces */
     if (autoip != NULL) {
@@ -438,8 +438,6 @@ autoip_tmr(void)
           break;
       }
     }
-    /* proceed to next network interface */
-    netif = netif->next;
   }
 }
 
@@ -465,11 +463,11 @@ autoip_arp_reply(struct netif *netif, struct etharp_hdr *hdr)
     struct eth_addr netifaddr;
     ETHADDR16_COPY(netifaddr.addr, netif->hwaddr);
 
-    /* Copy struct ip4_addr2 to aligned ip4_addr, to support compilers without
+    /* Copy struct ip4_addr_wordaligned to aligned ip4_addr, to support compilers without
      * structure packing (not using structure copy which breaks strict-aliasing rules).
      */
-    IPADDR2_COPY(&sipaddr, &hdr->sipaddr);
-    IPADDR2_COPY(&dipaddr, &hdr->dipaddr);
+    IPADDR_WORDALIGNED_COPY_TO_IP4_ADDR_T(&sipaddr, &hdr->sipaddr);
+    IPADDR_WORDALIGNED_COPY_TO_IP4_ADDR_T(&dipaddr, &hdr->dipaddr);
 
     if (autoip->state == AUTOIP_STATE_PROBING) {
      /* RFC 3927 Section 2.2.1:

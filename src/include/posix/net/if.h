@@ -1,9 +1,12 @@
 /**
  * @file
- * This file is a posix wrapper for lwip/if.h.
+ * This file is a posix wrapper for lwip/if_api.h.
  */
 
 /*
+ * Copyright (c) 2017 Joel Cunningham, Garmin International, Inc. <joel.cunningham@garmin.com>
+ * All rights reserved.
+ *
  * Redistribution and use in source and binary forms, with or without modification, 
  * are permitted provided that the following conditions are met:
  *
@@ -30,4 +33,4 @@
  *
  */
 
-#include "lwip/if.h"
+#include "lwip/if_api.h"

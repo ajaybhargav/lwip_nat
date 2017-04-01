@@ -1,12 +1,12 @@
 /**
  * @file
- * Interface Identification APIs from:
- *              RFC 3493: Basic Socket Interface Extensions for IPv6
- *                  Section 4: Interface Identification
+ * Application layered TCP/TLS connection API (to be used from TCPIP thread)
+ *
+ * This file contains options for an mbedtls port of the TLS layer.
  */
 
 /*
- * Copyright (c) 2017 Joel Cunningham <joel.cunningham@me.com>
+ * Copyright (c) 2017 Simon Goldschmidt
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -33,41 +33,35 @@
  *
  * This file is part of the lwIP TCP/IP stack.
  *
- * Author: Joel Cunningham <joel.cunningham@me.com>
+ * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
+#ifndef LWIP_HDR_ALTCP_TLS_OPTS_H
+#define LWIP_HDR_ALTCP_TLS_OPTS_H
+
 #include "lwip/opt.h"
 
-#if LWIP_SOCKET
+#if LWIP_ALTCP /* don't build if not configured for use in lwipopts.h */
 
-#include "lwip/netifapi.h"
+/** LWIP_ALTCP_TLS_MBEDTLS==1: use mbedTLS for TLS support for altcp API
+ * mbedtls include directory must be reachable via include search path
+ */
+#ifndef LWIP_ALTCP_TLS_MBEDTLS
+#define LWIP_ALTCP_TLS_MBEDTLS                        0
+#endif
 
-char *
-lwip_if_indextoname(unsigned ifindex, char *ifname)
-{
-  err_t err;
-  if (ifindex > 0xff) {
-    return NULL;
-  }
-  
-  err = netifapi_netif_index_to_name((u8_t)ifindex, ifname);
-  if (!err && ifname[0] != '\0') {
-    return ifname;
-  }
-  return NULL;
-}
+/** Configure debug level of this file */
+#ifndef ALTCP_MBEDTLS_DEBUG
+#define ALTCP_MBEDTLS_DEBUG                           LWIP_DBG_OFF
+#endif
 
-unsigned int
-lwip_if_nametoindex(const char *ifname)
-{
-  err_t err;
-  u8_t index;
-  
-  err = netifapi_netif_name_to_index(ifname, &index);
-  if (!err) {
-    return index;
-  }
-  return 0; /* invalid index */
-}
+/** Set a session timeout in seconds for the basic session cache
+ * ATTENTION: Using a session cache can lower security by reusing keys!
+ */
+#ifndef ALTCP_MBEDTLS_SESSION_CACHE_TIMEOUT_SECONDS
+#define ALTCP_MBEDTLS_SESSION_CACHE_TIMEOUT_SECONDS   0
+#endif
 
-#endif /* LWIP_SOCKET */
+#endif /* LWIP_ALTCP */
+
+#endif /* LWIP_HDR_ALTCP_TLS_OPTS_H */

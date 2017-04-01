@@ -56,6 +56,10 @@
 
 #include <string.h>
 
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
+
 #if LWIP_IPV4 && LWIP_ARP /* don't build if not configured for use in lwipopts.h */
 
 /** Re-request a used ARP entry 1 minute before it would expire to prevent
@@ -667,10 +671,10 @@ etharp_input(struct pbuf *p, struct netif *netif)
   autoip_arp_reply(netif, hdr);
 #endif /* LWIP_AUTOIP */
 
-  /* Copy struct ip4_addr2 to aligned ip4_addr, to support compilers without
+  /* Copy struct ip4_addr_wordaligned to aligned ip4_addr, to support compilers without
    * structure packing (not using structure copy which breaks strict-aliasing rules). */
-  IPADDR2_COPY(&sipaddr, &hdr->sipaddr);
-  IPADDR2_COPY(&dipaddr, &hdr->dipaddr);
+  IPADDR_WORDALIGNED_COPY_TO_IP4_ADDR_T(&sipaddr, &hdr->sipaddr);
+  IPADDR_WORDALIGNED_COPY_TO_IP4_ADDR_T(&dipaddr, &hdr->dipaddr);
 
   /* this interface is not configured? */
   if (ip4_addr_isany_val(*netif_ip4_addr(netif))) {
@@ -992,13 +996,12 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
     /* entry is still pending, queue the given packet 'q' */
     struct pbuf *p;
     int copy_needed = 0;
-    /* IF q includes a PBUF_REF, PBUF_POOL or PBUF_RAM, we have no choice but
-     * to copy the whole queue into a new PBUF_RAM (see bug #11400)
-     * PBUF_ROMs can be left as they are, since ROM must not get changed. */
+    /* IF q includes a pbuf that must be copied, copy the whole chain into a
+     * new PBUF_RAM. See the definition of PBUF_NEEDS_COPY for details. */
     p = q;
     while (p) {
       LWIP_ASSERT("no packet queues allowed!", (p->len != p->tot_len) || (p->next == 0));
-      if (p->type != PBUF_ROM) {
+      if (PBUF_NEEDS_COPY(p)) {
         copy_needed = 1;
         break;
       }
@@ -1129,10 +1132,10 @@ etharp_raw(struct netif *netif, const struct eth_addr *ethsrc_addr,
   /* Write the ARP MAC-Addresses */
   ETHADDR16_COPY(&hdr->shwaddr, hwsrc_addr);
   ETHADDR16_COPY(&hdr->dhwaddr, hwdst_addr);
-  /* Copy struct ip4_addr2 to aligned ip4_addr, to support compilers without
+  /* Copy struct ip4_addr_wordaligned to aligned ip4_addr, to support compilers without
    * structure packing. */
-  IPADDR2_COPY(&hdr->sipaddr, ipsrc_addr);
-  IPADDR2_COPY(&hdr->dipaddr, ipdst_addr);
+  IPADDR_WORDALIGNED_COPY_FROM_IP4_ADDR_T(&hdr->sipaddr, ipsrc_addr);
+  IPADDR_WORDALIGNED_COPY_FROM_IP4_ADDR_T(&hdr->dipaddr, ipdst_addr);
 
   hdr->hwtype = PP_HTONS(HWTYPE_ETHERNET);
   hdr->proto = PP_HTONS(ETHTYPE_IP);

@@ -32,8 +32,8 @@ generated.
 The MDNS code puts its structs on the stack where suitable to reduce dynamic
 memory allocation. It may use up to 1kB of stack.
 
-MDNS needs a strncasecmp() implementation. If you have one, define
-LWIP_MDNS_STRNCASECMP to it. Otherwise the code will provide an implementation
+MDNS (like other apps) needs a strncasecmp() implementation. If you have one, define
+'lwip_strnicmp' to it. Otherwise the code will provide an implementation
 for you.
 
 

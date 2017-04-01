@@ -282,12 +282,16 @@
 #define LWIP_SNMP_V3               0
 #endif
 
-#ifndef LWIP_SNMP_V3_CRYPTO
-#define LWIP_SNMP_V3_CRYPTO        LWIP_SNMP_V3
-#endif
-
 #ifndef LWIP_SNMP_V3_MBEDTLS
 #define LWIP_SNMP_V3_MBEDTLS       LWIP_SNMP_V3
+#endif
+
+#ifndef LWIP_SNMP_V3_CRYPTO
+#define LWIP_SNMP_V3_CRYPTO        LWIP_SNMP_V3_MBEDTLS
+#endif
+
+#ifndef LWIP_SNMP_CONFIGURE_VERSIONS
+#define LWIP_SNMP_CONFIGURE_VERSIONS 0
 #endif
 
 #endif /* LWIP_HDR_SNMP_OPTS_H */

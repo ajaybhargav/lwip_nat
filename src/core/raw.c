@@ -211,10 +211,19 @@ raw_input(struct pbuf *p, struct netif *inp)
 err_t
 raw_bind(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 {
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
   ip_addr_set_ipaddr(&pcb->local_ip, ipaddr);
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now.
+   * This is legacy support: scope-aware callers should always provide properly
+   * zoned source addresses. */
+  if (IP_IS_V6(&pcb->local_ip) &&
+      ip6_addr_lacks_zone(ip_2_ip6(&pcb->local_ip), IP6_UNKNOWN)) {
+    ip6_addr_select_zone(ip_2_ip6(&pcb->local_ip), ip_2_ip6(&pcb->local_ip));
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
   return ERR_OK;
 }
 
@@ -235,10 +244,18 @@ raw_bind(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 err_t
 raw_connect(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 {
-  if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
+  if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
   ip_addr_set_ipaddr(&pcb->remote_ip, ipaddr);
+#if LWIP_IPV6 && LWIP_IPV6_SCOPES
+  /* If the given IP address should have a zone but doesn't, assign one now,
+   * using the bound address to make a more informed decision when possible. */
+  if (IP_IS_V6(&pcb->remote_ip) &&
+      ip6_addr_lacks_zone(ip_2_ip6(&pcb->remote_ip), IP6_UNKNOWN)) {
+    ip6_addr_select_zone(ip_2_ip6(&pcb->remote_ip), ip_2_ip6(&pcb->local_ip));
+  }
+#endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
   pcb->flags |= RAW_FLAGS_CONNECTED;
   return ERR_OK;
 }
@@ -308,11 +325,24 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
 
   LWIP_DEBUGF(RAW_DEBUG | LWIP_DBG_TRACE, ("raw_sendto\n"));
 
-  if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
-    /* Don't call ip_route() with IP_ANY_TYPE */
-    netif = ip_route(IP46_ADDR_ANY(IP_GET_TYPE(ipaddr)), ipaddr);
-  } else {
-    netif = ip_route(&pcb->local_ip, ipaddr);
+#if LWIP_MULTICAST_TX_OPTIONS
+  netif = NULL;
+  if (ip_addr_ismulticast(ipaddr)) {
+    /* For multicast-destined packets, use the user-provided interface index to
+     * determine the outgoing interface, if an interface index is set and a
+     * matching netif can be found. Otherwise, fall back to regular routing. */
+    netif = netif_get_by_index(pcb->mcast_ifindex);
+  }
+
+  if (netif == NULL)
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+  {
+    if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
+      /* Don't call ip_route() with IP_ANY_TYPE */
+      netif = ip_route(IP46_ADDR_ANY(IP_GET_TYPE(ipaddr)), ipaddr);
+    } else {
+      netif = ip_route(&pcb->local_ip, ipaddr);
+    }
   }
 
   if (netif == NULL) {
@@ -321,7 +351,7 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
     return ERR_RTE;
   }
 
-  if (ip_addr_isany(&pcb->local_ip)) {
+  if (ip_addr_isany(&pcb->local_ip) || ip_addr_ismulticast(&pcb->local_ip)) {
     /* use outgoing network interface IP address as source address */
     src_ip = ip_netif_get_local_ip(netif, ipaddr);
 #if LWIP_IPV6
@@ -357,6 +387,7 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   err_t err;
   struct pbuf *q; /* q will be sent down the stack */
   s16_t header_size;
+  u8_t ttl;
 
   if ((pcb == NULL) || (dst_ip == NULL) || (netif == NULL) || (src_ip == NULL) ||
       !IP_ADDR_PCB_VERSION_MATCH(pcb, src_ip) || !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
@@ -380,12 +411,17 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
     if (p->len < header_size) {
       return ERR_VAL;
     }
+    /* @todo multicast loop support, if at all desired for this scenario.. */
     NETIF_SET_HWADDRHINT(netif, &pcb->addr_hint);
     err = ip_output_if_hdrincl(p, src_ip, dst_ip, netif);
     NETIF_SET_HWADDRHINT(netif, NULL);
     return err;
   }
 
+  /* packet too large to add an IP header without causing an overflow? */
+  if ((u16_t)(p->tot_len + header_size) < p->tot_len) {
+    return ERR_MEM;
+  }
   /* not enough space to add an IP header to first pbuf in given p chain? */
   if (pbuf_header(p, header_size)) {
     /* allocate header in new pbuf */
@@ -425,6 +461,13 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   }
 #endif /* IP_SOF_BROADCAST */
 
+  /* Multicast Loop? */
+#if LWIP_MULTICAST_TX_OPTIONS
+  if (((pcb->flags & RAW_FLAGS_MULTICAST_LOOP) != 0) && ip_addr_ismulticast(dst_ip)) {
+    q->flags |= PBUF_FLAG_MCASTLOOP;
+  }
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+
 #if LWIP_IPV6
   /* If requested, based on the IPV6_CHECKSUM socket option per RFC3542,
      compute the checksum and update the checksum in the payload. */
@@ -435,8 +478,15 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   }
 #endif
 
+  /* Determine TTL to use */
+#if LWIP_MULTICAST_TX_OPTIONS
+  ttl = (ip_addr_ismulticast(dst_ip) ? raw_get_multicast_ttl(pcb) : pcb->ttl);
+#else /* LWIP_MULTICAST_TX_OPTIONS */
+  ttl = pcb->ttl;
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+
   NETIF_SET_HWADDRHINT(netif, &pcb->addr_hint);
-  err = ip_output_if(q, src_ip, dst_ip, pcb->ttl, pcb->tos, pcb->protocol, netif);
+  err = ip_output_if(q, src_ip, dst_ip, ttl, pcb->tos, pcb->protocol, netif);
   NETIF_SET_HWADDRHINT(netif, NULL);
 
   /* did we chain a header earlier? */
@@ -517,6 +567,9 @@ raw_new(u8_t proto)
     memset(pcb, 0, sizeof(struct raw_pcb));
     pcb->protocol = proto;
     pcb->ttl = RAW_TTL;
+#if LWIP_MULTICAST_TX_OPTIONS
+    raw_set_multicast_ttl(pcb, RAW_TTL);
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
     pcb->next = raw_pcbs;
     raw_pcbs = pcb;
   }

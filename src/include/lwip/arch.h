@@ -66,7 +66,7 @@
 #endif
 
 /** Define random number generator function of your system */
-#ifndef LWIP_RAND
+#ifdef __DOXYGEN__
 #define LWIP_RAND() ((u32_t)rand())
 #endif
 
@@ -76,7 +76,7 @@
  * systems, this should be defined to something less resource-consuming.
  */
 #ifndef LWIP_PLATFORM_DIAG
-#define LWIP_PLATFORM_DIAG(x)	do {printf x;} while(0)
+#define LWIP_PLATFORM_DIAG(x) do {printf x;} while(0)
 #include <stdio.h>
 #include <stdlib.h>
 #endif
@@ -116,12 +116,20 @@
 /* Define generic types used in lwIP */
 #if !LWIP_NO_STDINT_H
 #include <stdint.h>
+/* stdint.h is C99 which should also provide support for 64-bit integers */
+#if !defined(LWIP_HAVE_INT64) && defined(UINT64_MAX)
+#define LWIP_HAVE_INT64 1
+#endif
 typedef uint8_t   u8_t;
 typedef int8_t    s8_t;
 typedef uint16_t  u16_t;
 typedef int16_t   s16_t;
 typedef uint32_t  u32_t;
 typedef int32_t   s32_t;
+#if LWIP_HAVE_INT64
+typedef uint64_t  u64_t;
+typedef int64_t   s64_t;
+#endif
 typedef uintptr_t mem_ptr_t;
 #endif
 
@@ -160,6 +168,19 @@ typedef uintptr_t mem_ptr_t;
 #ifndef SZT_F
 #define SZT_F PRIuPTR
 #endif
+#endif
+
+/** Define this to 1 in arch/cc.h of your port if your compiler does not provide
+ * the limits.h header. You need to define the type limits yourself in this case
+ * (e.g. INT_MAX).
+ */
+#ifndef LWIP_NO_LIMITS_H
+#define LWIP_NO_LIMITS_H 0
+#endif
+
+/* Include limits.h? */
+#if !LWIP_NO_LIMITS_H
+#include <limits.h>
 #endif
 
 /** C++ const_cast<target_type>(val) equivalent to remove constness from a value (GCC -Wcast-qual) */
@@ -278,7 +299,7 @@ extern "C" {
 #define PACK_STRUCT_FLD_S(x) PACK_STRUCT_FIELD(x)
 #endif /* PACK_STRUCT_FLD_S */
 
-/** Packed structs support using \#include files before and after struct to be packed.\n
+/** PACK_STRUCT_USE_INCLUDES==1: Packed structs support using \#include files before and after struct to be packed.\n
  * The file included BEFORE the struct is "arch/bpstruct.h".\n
  * The file included AFTER the struct is "arch/epstruct.h".\n
  * This can be used to implement struct packing on MS Visual C compilers, see
@@ -294,6 +315,15 @@ extern "C" {
 #ifndef LWIP_UNUSED_ARG
 #define LWIP_UNUSED_ARG(x) (void)x
 #endif /* LWIP_UNUSED_ARG */
+
+/** LWIP_PROVIDE_ERRNO==1: Let lwIP provide ERRNO values and the 'errno' variable.
+ * If this is disabled, cc.h must either define 'errno', include <errno.h>,
+ * define LWIP_ERRNO_STDINCLUDE to get <errno.h> included or
+ * define LWIP_ERRNO_INCLUDE to <errno.h> or equivalent.
+ */
+#if defined __DOXYGEN__
+#define LWIP_PROVIDE_ERRNO
+#endif
 
 /**
  * @}

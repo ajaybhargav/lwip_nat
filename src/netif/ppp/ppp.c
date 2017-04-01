@@ -80,8 +80,8 @@
  */
 
 /**
- * @defgroup ppp PPP netif
- * @ingroup addons
+ * @defgroup ppp PPP
+ * @ingroup netifs
  * @verbinclude "ppp.txt"
  */
 
@@ -275,8 +275,8 @@ err_t ppp_connect(ppp_pcb *pcb, u16_t holdoff) {
   PPPDEBUG(LOG_DEBUG, ("ppp_connect[%d]: holdoff=%d\n", pcb->netif->num, holdoff));
 
   if (holdoff == 0) {
-    new_phase(pcb, PPP_PHASE_INITIALIZE);
-    return pcb->link_cb->connect(pcb, pcb->link_ctx_cb);
+    ppp_do_connect(pcb);
+    return ERR_OK;
   }
 
   new_phase(pcb, PPP_PHASE_HOLDOFF);
@@ -302,7 +302,8 @@ err_t ppp_listen(ppp_pcb *pcb) {
 
   if (pcb->link_cb->listen) {
     new_phase(pcb, PPP_PHASE_INITIALIZE);
-    return pcb->link_cb->listen(pcb, pcb->link_ctx_cb);
+    pcb->link_cb->listen(pcb, pcb->link_ctx_cb);
+    return ERR_OK;
   }
   return ERR_IF;
 }
@@ -1273,8 +1274,8 @@ int cif6addr(ppp_pcb *pcb, eui64_t our_eui64, eui64_t his_eui64) {
   LWIP_UNUSED_ARG(our_eui64);
   LWIP_UNUSED_ARG(his_eui64);
 
-  netif_ip6_addr_set(pcb->netif, 0, IP6_ADDR_ANY6);
   netif_ip6_addr_set_state(pcb->netif, 0, IP6_ADDR_INVALID);
+  netif_ip6_addr_set(pcb->netif, 0, IP6_ADDR_ANY6);
   return 1;
 }
 

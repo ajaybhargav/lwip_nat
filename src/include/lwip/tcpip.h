@@ -97,6 +97,10 @@ err_t  tcpip_timeout(u32_t msecs, sys_timeout_handler h, void *arg);
 err_t  tcpip_untimeout(sys_timeout_handler h, void *arg);
 #endif /* LWIP_TCPIP_TIMEOUT && LWIP_TIMERS */
 
+#ifdef TCPIP_THREAD_TEST
+int tcpip_thread_poll_one(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

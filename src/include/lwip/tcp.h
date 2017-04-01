@@ -42,6 +42,7 @@
 
 #if LWIP_TCP /* don't build if not configured for use in lwipopts.h */
 
+#include "lwip/tcpbase.h"
 #include "lwip/mem.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip.h"
@@ -136,34 +137,18 @@ typedef err_t (*tcp_connected_fn)(void *arg, struct tcp_pcb *tpcb, err_t err);
 #define SND_WND_SCALE(pcb, wnd) (((wnd) << (pcb)->snd_scale))
 #define TCPWND16(x)             ((u16_t)LWIP_MIN((x), 0xFFFF))
 #define TCP_WND_MAX(pcb)        ((tcpwnd_size_t)(((pcb)->flags & TF_WND_SCALE) ? TCP_WND : TCPWND16(TCP_WND)))
-typedef u32_t tcpwnd_size_t;
 #else
 #define RCV_WND_SCALE(pcb, wnd) (wnd)
 #define SND_WND_SCALE(pcb, wnd) (wnd)
 #define TCPWND16(x)             (x)
 #define TCP_WND_MAX(pcb)        TCP_WND
-typedef u16_t tcpwnd_size_t;
 #endif
 
-#if LWIP_WND_SCALE || TCP_LISTEN_BACKLOG
+#if LWIP_WND_SCALE || TCP_LISTEN_BACKLOG || LWIP_TCP_TIMESTAMPS
 typedef u16_t tcpflags_t;
 #else
 typedef u8_t tcpflags_t;
 #endif
-
-enum tcp_state {
-  CLOSED      = 0,
-  LISTEN      = 1,
-  SYN_SENT    = 2,
-  SYN_RCVD    = 3,
-  ESTABLISHED = 4,
-  FIN_WAIT_1  = 5,
-  FIN_WAIT_2  = 6,
-  CLOSE_WAIT  = 7,
-  CLOSING     = 8,
-  LAST_ACK    = 9,
-  TIME_WAIT   = 10
-};
 
 /**
  * members common to struct tcp_pcb and struct tcp_listen_pcb
@@ -210,7 +195,7 @@ struct tcp_pcb {
 #define TF_ACK_DELAY   0x01U   /* Delayed ACK. */
 #define TF_ACK_NOW     0x02U   /* Immediate ACK. */
 #define TF_INFR        0x04U   /* In fast recovery. */
-#define TF_TIMESTAMP   0x08U   /* Timestamp option enabled */
+#define TF_CLOSEPEND   0x08U   /* If this is set, tcp_close failed to enqueue the FIN (retried in tcp_tmr) */
 #define TF_RXCLOSED    0x10U   /* rx closed by tcp_shutdown */
 #define TF_FIN         0x20U   /* Connection was closed locally (FIN segment enqueued). */
 #define TF_NODELAY     0x40U   /* Disable Nagle algorithm */
@@ -220,6 +205,9 @@ struct tcp_pcb {
 #endif
 #if TCP_LISTEN_BACKLOG
 #define TF_BACKLOGPEND 0x0200U /* If this is set, a connection pcb has increased the backlog on its listener */
+#endif
+#if LWIP_TCP_TIMESTAMPS
+#define TF_TIMESTAMP   0x0400U   /* Timestamp option enabled */
 #endif
 
   /* the rest of the fields are in host byte order
@@ -358,8 +346,15 @@ void             tcp_accept  (struct tcp_pcb *pcb, tcp_accept_fn accept);
 #endif /* LWIP_CALLBACK_API */
 void             tcp_poll    (struct tcp_pcb *pcb, tcp_poll_fn poll, u8_t interval);
 
+#if LWIP_TCP_TIMESTAMPS
 #define          tcp_mss(pcb)             (((pcb)->flags & TF_TIMESTAMP) ? ((pcb)->mss - 12)  : (pcb)->mss)
+#else /* LWIP_TCP_TIMESTAMPS */
+/** @ingroup tcp_raw */
+#define          tcp_mss(pcb)             ((pcb)->mss)
+#endif /* LWIP_TCP_TIMESTAMPS */
+/** @ingroup tcp_raw */
 #define          tcp_sndbuf(pcb)          (TCPWND16((pcb)->snd_buf))
+/** @ingroup tcp_raw */
 #define          tcp_sndqueuelen(pcb)     ((pcb)->snd_queuelen)
 /** @ingroup tcp_raw */
 #define          tcp_nagle_disable(pcb)   ((pcb)->flags |= TF_NODELAY)
@@ -396,23 +391,16 @@ void             tcp_abort (struct tcp_pcb *pcb);
 err_t            tcp_close   (struct tcp_pcb *pcb);
 err_t            tcp_shutdown(struct tcp_pcb *pcb, int shut_rx, int shut_tx);
 
-/* Flags for "apiflags" parameter in tcp_write */
-#define TCP_WRITE_FLAG_COPY 0x01
-#define TCP_WRITE_FLAG_MORE 0x02
-
 err_t            tcp_write   (struct tcp_pcb *pcb, const void *dataptr, u16_t len,
                               u8_t apiflags);
 
 void             tcp_setprio (struct tcp_pcb *pcb, u8_t prio);
 
-#define TCP_PRIO_MIN    1
-#define TCP_PRIO_NORMAL 64
-#define TCP_PRIO_MAX    127
-
 err_t            tcp_output  (struct tcp_pcb *pcb);
 
+err_t            tcp_tcp_get_tcp_addrinfo(struct tcp_pcb *pcb, int local, ip_addr_t *addr, u16_t *port);
 
-const char* tcp_debug_state_str(enum tcp_state s);
+#define tcp_dbg_get_tcp_state(pcb) ((pcb)->state)
 
 /* for compatibility with older implementation */
 #define tcp_new_ip6() tcp_new_ip_type(IPADDR_TYPE_V6)

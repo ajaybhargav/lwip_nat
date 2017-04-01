@@ -280,6 +280,7 @@ DNS_LOCAL_HOSTLIST_STORAGE_PRE struct local_hostlist_entry local_hostlist_static
 #endif /* DNS_LOCAL_HOSTLIST_IS_DYNAMIC */
 
 static void dns_init_local(void);
+static err_t dns_lookup_local(const char *hostname, ip_addr_t *addr LWIP_DNS_ADDRTYPE_ARG(u8_t dns_addrtype));
 #endif /* DNS_LOCAL_HOSTLIST */
 
 
@@ -432,13 +433,57 @@ dns_init_local(void)
 
 /**
  * @ingroup dns
+ * Iterate the local host-list for a hostname.
+ *
+ * @param iterator_fn a function that is called for every entry in the local host-list
+ * @param iterator_arg 3rd argument passed to iterator_fn
+ * @return the number of entries in the local host-list
+ */
+size_t
+dns_local_iterate(dns_found_callback iterator_fn, void *iterator_arg)
+{
+  size_t i;
+#if DNS_LOCAL_HOSTLIST_IS_DYNAMIC
+  struct local_hostlist_entry *entry = local_hostlist_dynamic;
+  i = 0;
+  while (entry != NULL) {
+    if (iterator_fn != NULL) {
+      iterator_fn(entry->name, &entry->addr, iterator_arg);
+    }
+    i++;
+    entry = entry->next;
+  }
+#else /* DNS_LOCAL_HOSTLIST_IS_DYNAMIC */
+  for (i = 0; i < LWIP_ARRAYSIZE(local_hostlist_static); i++) {
+    if (iterator_fn != NULL) {
+      iterator_fn(local_hostlist_static[i].name, &local_hostlist_static[i].addr, iterator_arg);
+    }
+  }
+#endif /* DNS_LOCAL_HOSTLIST_IS_DYNAMIC */
+  return i;
+}
+
+/**
+ * @ingroup dns
  * Scans the local host-list for a hostname.
  *
  * @param hostname Hostname to look for in the local host-list
  * @param addr the first IP address for the hostname in the local host-list or
  *         IPADDR_NONE if not found.
+ * @param dns_addrtype - LWIP_DNS_ADDRTYPE_IPV4_IPV6: try to resolve IPv4 (ATTENTION: no fallback here!)
+ *                     - LWIP_DNS_ADDRTYPE_IPV6_IPV4: try to resolve IPv6 (ATTENTION: no fallback here!)
+ *                     - LWIP_DNS_ADDRTYPE_IPV4: try to resolve IPv4 only
+ *                     - LWIP_DNS_ADDRTYPE_IPV6: try to resolve IPv6 only
  * @return ERR_OK if found, ERR_ARG if not found
  */
+err_t
+dns_local_lookup(const char *hostname, ip_addr_t *addr, u8_t dns_addrtype)
+{
+  LWIP_UNUSED_ARG(dns_addrtype);
+  return dns_lookup_local(hostname, addr LWIP_DNS_ADDRTYPE_ARG(dns_addrtype));
+}
+
+/* Internal implementation for dns_local_lookup and dns_lookup */
 static err_t
 dns_lookup_local(const char *hostname, ip_addr_t *addr LWIP_DNS_ADDRTYPE_ARG(u8_t dns_addrtype))
 {
@@ -560,8 +605,6 @@ static err_t
 dns_lookup(const char *name, ip_addr_t *addr LWIP_DNS_ADDRTYPE_ARG(u8_t dns_addrtype))
 {
   u8_t i;
-#if DNS_LOCAL_HOSTLIST || defined(DNS_LOOKUP_LOCAL_EXTERN)
-#endif /* DNS_LOCAL_HOSTLIST || defined(DNS_LOOKUP_LOCAL_EXTERN) */
 #if DNS_LOCAL_HOSTLIST
   if (dns_lookup_local(name, addr LWIP_DNS_ADDRTYPE_ARG(dns_addrtype)) == ERR_OK) {
     return ERR_OK;
@@ -802,28 +845,28 @@ static struct udp_pcb*
 dns_alloc_random_port(void)
 {
   err_t err;
-  struct udp_pcb* ret;
+  struct udp_pcb* pcb;
 
-  ret = udp_new_ip_type(IPADDR_TYPE_ANY);
-  if (ret == NULL) {
+  pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
+  if (pcb == NULL) {
     /* out of memory, have to reuse an existing pcb */
     return NULL;
   }
   do {
     u16_t port = (u16_t)DNS_RAND_TXID();
-    if (!DNS_PORT_ALLOWED(port)) {
+    if (DNS_PORT_ALLOWED(port)) {
+      err = udp_bind(pcb, IP_ANY_TYPE, port);
+    } else {
       /* this port is not allowed, try again */
       err = ERR_USE;
-      continue;
     }
-    err = udp_bind(ret, IP_ANY_TYPE, port);
   } while (err == ERR_USE);
   if (err != ERR_OK) {
-    udp_remove(ret);
+    udp_remove(pcb);
     return NULL;
   }
-  udp_recv(ret, dns_recv, NULL);
-  return ret;
+  udp_recv(pcb, dns_recv, NULL);
+  return pcb;
 }
 
 /**
@@ -1436,9 +1479,9 @@ dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_found_callback foun
  *              ERR_INPROGRESS is returned!)
  * @param callback_arg argument to pass to the callback function
  * @param dns_addrtype - LWIP_DNS_ADDRTYPE_IPV4_IPV6: try to resolve IPv4 first, try IPv6 if IPv4 fails only
- *                      - LWIP_DNS_ADDRTYPE_IPV6_IPV4: try to resolve IPv6 first, try IPv4 if IPv6 fails only
- *                      - LWIP_DNS_ADDRTYPE_IPV4: try to resolve IPv4 only
- *                      - LWIP_DNS_ADDRTYPE_IPV6: try to resolve IPv6 only
+ *                     - LWIP_DNS_ADDRTYPE_IPV6_IPV4: try to resolve IPv6 first, try IPv4 if IPv6 fails only
+ *                     - LWIP_DNS_ADDRTYPE_IPV4: try to resolve IPv4 only
+ *                     - LWIP_DNS_ADDRTYPE_IPV6: try to resolve IPv6 only
  */
 err_t
 dns_gethostbyname_addrtype(const char *hostname, ip_addr_t *addr, dns_found_callback found,
