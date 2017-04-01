@@ -27,7 +27,7 @@
  * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
  * OF SUCH DAMAGE.
  *
- * This file is part of the lwIP TCP/IP stack.
+ * This file is not a part of the lwIP TCP/IP stack.
  */
 
 /*
@@ -53,7 +53,8 @@
  * Date           Author       Notes
  * 2015-01-26     Hichard      porting to RT-Thread
  * 2015-01-27     Bernard      code cleanup for lwIP in RT-Thread
- * 2016-11-19     Ajay Bhargav Modified for lwIP 2.0/lwIP Head
+ * 2016-11-19     Ajay Bhargav Modified for lwIP 2.x/lwIP Head
+ * 2017-04-01     Ajay Bhargav Updated license information
  */
 
 /*
