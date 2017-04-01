@@ -44,6 +44,7 @@ LICENSE
 
 lwIP is freely available under a BSD license.
 
+lwIP NAT source is not part of lwIP stack and is available under GPL license.
 
 DEVELOPMENT
 
