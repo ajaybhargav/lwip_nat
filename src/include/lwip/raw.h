@@ -105,6 +105,7 @@ struct raw_pcb * raw_new        (u8_t proto);
 struct raw_pcb * raw_new_ip_type(u8_t type, u8_t proto);
 void             raw_remove     (struct raw_pcb *pcb);
 err_t            raw_bind       (struct raw_pcb *pcb, const ip_addr_t *ipaddr);
+void             raw_bind_netif (struct raw_pcb *pcb, const struct netif *netif);
 err_t            raw_connect    (struct raw_pcb *pcb, const ip_addr_t *ipaddr);
 void             raw_disconnect (struct raw_pcb *pcb);
 
@@ -116,6 +117,10 @@ void             raw_recv       (struct raw_pcb *pcb, raw_recv_fn recv, void *re
 
 #define          raw_flags(pcb) ((pcb)->flags)
 #define          raw_setflags(pcb,f)  ((pcb)->flags = (f))
+
+#define          raw_set_flags(pcb, set_flags)     do { (pcb)->flags = (u8_t)((pcb)->flags |  (set_flags)); } while(0)
+#define          raw_clear_flags(pcb, clr_flags)   do { (pcb)->flags = (u8_t)((pcb)->flags & ~(clr_flags)); } while(0)
+#define          raw_is_flag_set(pcb, flag)        (((pcb)->flags & (flag)) != 0)
 
 /* The following functions are the lower layer interface to RAW. */
 u8_t             raw_input      (struct pbuf *p, struct netif *inp);

@@ -44,6 +44,29 @@
  * On receive, the port netif calls into the bridge (via its netif->input function) and
  * the bridge selects the port(s) (and/or its netif->input function) to pass the received pbuf to.
  *
+ * Usage:
+ * - add the port netifs just like you would when using them as dedicated netif without a bridge
+ *   - only NETIF_FLAG_ETHARP/NETIF_FLAG_ETHERNET netifs are supported as bridge ports
+ *   - add the bridge port netifs without IPv4 addresses (i.e. pass 'NULL, NULL, NULL')
+ *   - don't add IPv6 addresses to the port netifs!
+ * - set up the bridge configuration in a global variable of type 'bridgeif_initdata_t' that contains
+ *   - the MAC address of the bridge
+ *   - some configuration options controlling the memory consumption (maximum number of ports
+ *     and FDB entries)
+ *   - e.g. for a bridge MAC address 00-01-02-03-04-05, 2 bridge ports, 1024 FDB entries + 16 static MAC entries:
+ *     bridgeif_initdata_t mybridge_initdata = BRIDGEIF_INITDATA1(2, 1024, 16, ETH_ADDR(0, 1, 2, 3, 4, 5));
+ * - add the bridge netif (with IPv4 config):
+ *   struct netif bridge_netif;
+ *   netif_add(&bridge_netif, &my_ip, &my_netmask, &my_gw, &mybridge_initdata, bridgeif_init, tcpip_input);
+ *   NOTE: the passed 'input' function depends on BRIDGEIF_PORT_NETIFS_OUTPUT_DIRECT setting,
+ *         which controls where the forwarding is done (netif low level input context vs. tcpip_thread)
+ * - set up all ports netifs and the bridge netif
+ *
+ * - When adding a port netif, NETIF_FLAG_ETHARP flag will be removed from a port
+ *   to prevent ETHARP working on that port netif (we only want one IP per bridge not per port).
+ * - When adding a port netif, its input function is changed to call into the bridge.
+ *
+ *
  * @todo:
  * - compact static FDB entries (instead of walking the whole array)
  * - add FDB query/read access
@@ -204,7 +227,7 @@ bridgeif_fdb_get_dst_ports(void *fdb_ptr, struct eth_addr *dst_addr)
     bridgeif_dfdb_entry_t *e = &fdb->fdb[i];
     if (e->used && e->ts) {
       if (!memcmp(&e->addr, dst_addr, sizeof(struct eth_addr))) {
-        bridgeif_portmask_t ret = 1 << e->port;
+        bridgeif_portmask_t ret = (bridgeif_portmask_t)(1 << e->port);
         BRIDGEIF_READ_UNPROTECT(lev);
         return ret;
       }
@@ -219,10 +242,14 @@ static void*
 bridgeif_fdb_init(u16_t max_fdb_entries)
 {
   bridgeif_dfdb_t *fdb;
-  mem_size_t alloc_len = sizeof(bridgeif_dfdb_t) + (max_fdb_entries*sizeof(bridgeif_dfdb_entry_t));
-  LWIP_DEBUGF(BRIDGEIF_DEBUG, ("bridgeif_init: allocating %d bytes for private data\n", (int)alloc_len));
-  fdb = (bridgeif_dfdb_t*)mem_malloc(alloc_len);
-  memset(fdb, 0, alloc_len);
+  size_t alloc_len_sizet = sizeof(bridgeif_dfdb_t) + (max_fdb_entries*sizeof(bridgeif_dfdb_entry_t));
+  mem_size_t alloc_len = (mem_size_t)alloc_len_sizet;
+  LWIP_ASSERT("alloc_len == alloc_len_sizet", alloc_len == alloc_len_sizet);
+  LWIP_DEBUGF(BRIDGEIF_DEBUG, ("bridgeif_fdb_init: allocating %d bytes for private FDB data\n", (int)alloc_len));
+  fdb = (bridgeif_dfdb_t*)mem_calloc(1, alloc_len);
+  if (fdb == NULL) {
+    return NULL;
+  }
   fdb->max_fdb_entries = max_fdb_entries;
   fdb->fdb = (bridgeif_dfdb_entry_t *)(fdb + 1);
   return fdb;
@@ -430,7 +457,7 @@ bridgeif_send_to_ports(bridgeif_private_t *br, struct pbuf *p, bridgeif_portmask
   bridgeif_portmask_t mask = 1;
   BRIDGEIF_DECL_PROTECT(lev);
   BRIDGEIF_READ_PROTECT(lev);
-  for (i = 0; i < BRIDGEIF_MAX_PORTS; i++, mask <<= 1) {
+  for (i = 0; i < BRIDGEIF_MAX_PORTS; i++, mask = (bridgeif_portmask_t)(mask << 1)) {
     if (dstports & mask) {
       err = bridgeif_send_to_port(br, p, i);
       if (err != ERR_OK) {
@@ -552,6 +579,10 @@ bridgeif_tcpip_input(struct pbuf *p, struct netif *netif)
  * @ingroup bridgeif
  * Initialization function passed to netif_add().
  *
+ * ATTENTION: A pointer to a @ref bridgeif_initdata_t must be passed as 'state'
+ *            to @ref netif_add when adding the bridge. I supplies MAC address
+ *            and controls memory allocation (number of ports, FDB size).
+ *
  * @param netif the lwip network interface structure for this ethernetif
  * @return ERR_OK if the loopif is initialized
  *         ERR_MEM if private data couldn't be allocated
@@ -562,12 +593,14 @@ bridgeif_init(struct netif *netif)
 {
   bridgeif_initdata_t *init_data;
   bridgeif_private_t *br;
+  size_t alloc_len_sizet;
   mem_size_t alloc_len;
 
   LWIP_ASSERT("netif != NULL", (netif != NULL));
 #if !BRIDGEIF_PORT_NETIFS_OUTPUT_DIRECT
-  LWIP_ASSERT("bridgeif does not need tcpip_input, use netif_input/ethernet_input instead",
-    netif->input != tcpip_input);
+  if (netif->input == tcpip_input) {
+    LWIP_DEBUGF(BRIDGEIF_DEBUG|LWIP_DBG_ON, ("bridgeif does not need tcpip_input, use netif_input/ethernet_input instead"));
+  }
 #endif
 
   if (bridgeif_netif_client_id == 0xFF) {
@@ -576,15 +609,18 @@ bridgeif_init(struct netif *netif)
 
   init_data = (bridgeif_initdata_t *)netif->state;
   LWIP_ASSERT("init_data != NULL", (init_data != NULL));
+  LWIP_ASSERT("init_data->max_ports <= BRIDGEIF_MAX_PORTS",
+    init_data->max_ports <= BRIDGEIF_MAX_PORTS);
 
-  alloc_len = sizeof(bridgeif_private_t) + (init_data->max_ports*sizeof(bridgeif_port_t) + (init_data->max_fdb_static_entries*sizeof(bridgeif_fdb_static_entry_t)));
+  alloc_len_sizet = sizeof(bridgeif_private_t) + (init_data->max_ports*sizeof(bridgeif_port_t) + (init_data->max_fdb_static_entries*sizeof(bridgeif_fdb_static_entry_t)));
+  alloc_len = (mem_size_t)alloc_len_sizet;
+  LWIP_ASSERT("alloc_len == alloc_len_sizet", alloc_len == alloc_len_sizet);
   LWIP_DEBUGF(BRIDGEIF_DEBUG, ("bridgeif_init: allocating %d bytes for private data\n", (int)alloc_len));
-  br = (bridgeif_private_t*)mem_malloc(alloc_len);
+  br = (bridgeif_private_t*)mem_calloc(1, alloc_len);
   if (br == NULL) {
     LWIP_DEBUGF(NETIF_DEBUG, ("bridgeif_init: out of memory\n"));
     return ERR_MEM;
   }
-  memset(br, 0, alloc_len);
   memcpy(&br->ethaddr, &init_data->ethaddr, sizeof(br->ethaddr));
   br->netif = netif;
 
@@ -595,7 +631,12 @@ bridgeif_init(struct netif *netif)
   br->fdbs = (bridgeif_fdb_static_entry_t*)(((u8_t*)(br + 1)) + (init_data->max_ports*sizeof(bridgeif_port_t)));
 
   br->max_fdbd_entries = init_data->max_fdb_dynamic_entries;
-  br->fdbd = bridgeif_fdb_init(init_data->max_fdb_static_entries);
+  br->fdbd = bridgeif_fdb_init(init_data->max_fdb_dynamic_entries);
+  if (br->fdbd == NULL) {
+    LWIP_DEBUGF(NETIF_DEBUG, ("bridgeif_init: out of memory in fdb_init\n"));
+    mem_free(br);
+    return ERR_MEM;
+  }
 
 #if LWIP_NETIF_HOSTNAME
   /* Initialize interface hostname */
@@ -694,7 +735,7 @@ bridgeif_add_port(struct netif *bridgeif, struct netif *portif)
   /* store pointer to bridge in netif */
   netif_set_client_data(portif, bridgeif_netif_client_id, port);
   /* remove ETHARP flag to prevent sending report events on netif-up */
-  portif->flags &= ~NETIF_FLAG_ETHARP;
+  netif_clear_flags(portif, NETIF_FLAG_ETHARP);
 
   return ERR_OK;
 }

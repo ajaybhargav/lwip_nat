@@ -217,6 +217,9 @@ pppos_write(ppp_pcb *ppp, void *ctx, struct pbuf *p)
     return ERR_MEM;
   }
 
+  /* Set nb->tot_len to actual payload length */
+  nb->tot_len = p->len;
+
   /* If the link has been idle, we'll send a fresh flag character to
    * flush any noise. */
   err = ERR_OK;
@@ -261,6 +264,9 @@ pppos_netif_output(ppp_pcb *ppp, void *ctx, struct pbuf *pb, u16_t protocol)
     MIB2_STATS_NETIF_INC(ppp->netif, ifoutdiscards);
     return ERR_MEM;
   }
+
+  /* Set nb->tot_len to actual payload length */
+  nb->tot_len = pb->tot_len;
 
   /* If the link has been idle, we'll send a fresh flag character to
    * flush any noise. */
@@ -544,7 +550,7 @@ pppos_input(ppp_pcb *ppp, u8_t *s, int l)
           pbuf_header(inp, -(s16_t)(PBUF_LINK_ENCAPSULATION_HLEN + PBUF_LINK_HLEN));
 #endif /* IP_FORWARD || LWIP_IPV6_FORWARD */
 #if PPP_INPROC_IRQ_SAFE
-          if(tcpip_callback_with_block(pppos_input_callback, inp, 0) != ERR_OK) {
+          if(tcpip_try_callback(pppos_input_callback, inp) != ERR_OK) {
             PPPDEBUG(LOG_ERR, ("pppos_input[%d]: tcpip_callback() failed, dropping packet\n", ppp->netif->num));
             pbuf_free(inp);
             LINK_STATS_INC(link.drop);

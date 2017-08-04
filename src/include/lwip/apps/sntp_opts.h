@@ -86,11 +86,6 @@
 #define SNTP_PORT                   123
 #endif
 
-/** Set this to 1 to allow config of SNTP server(s) by DNS name */
-#if !defined SNTP_SERVER_DNS || defined __DOXYGEN__
-#define SNTP_SERVER_DNS             0
-#endif
-
 /** Sanity check:
  * Define this to
  * - 0 to turn off sanity checks (default; smaller code)
@@ -98,7 +93,7 @@
  *        response comes from the server we sent the request to.
  * - >= 2 to check returned Originate Timestamp against Transmit Timestamp
  *        sent to the server (to ensure response to older request).
- * - >= 3 @todo: discard reply if any of the LI, Stratum, or Transmit Timestamp
+ * - >= 3 @todo: discard reply if any of the VN, Stratum, or Transmit Timestamp
  *        fields is 0 or the Mode field is not 4 (unicast) or 5 (broadcast).
  * - >= 4 @todo: to check that the Root Delay and Root Dispersion fields are each
  *        greater than or equal to 0 and less than infinity, where infinity is
@@ -140,26 +135,30 @@
  * Turned off by default.
  */
 #if !defined SNTP_STARTUP_DELAY || defined __DOXYGEN__
+#ifdef LWIP_RAND
+#define SNTP_STARTUP_DELAY          1
+#else
 #define SNTP_STARTUP_DELAY          0
+#endif
 #endif
 
 /** If you want the startup delay to be a function, define this
  * to a function (including the brackets) and define SNTP_STARTUP_DELAY to 1.
  */
 #if !defined SNTP_STARTUP_DELAY_FUNC || defined __DOXYGEN__
-#define SNTP_STARTUP_DELAY_FUNC     SNTP_STARTUP_DELAY
+#define SNTP_STARTUP_DELAY_FUNC     (LWIP_RAND() % 5000)
 #endif
 
 /** SNTP receive timeout - in milliseconds
  * Also used as retry timeout - this shouldn't be too low.
- * Default is 3 seconds.
+ * Default is 15 seconds. Must not be beolw 15 seconds by specification (i.e. 15000)
  */
 #if !defined SNTP_RECV_TIMEOUT || defined __DOXYGEN__
-#define SNTP_RECV_TIMEOUT           3000
+#define SNTP_RECV_TIMEOUT           15000
 #endif
 
 /** SNTP update delay - in milliseconds
- * Default is 1 hour. Must not be beolw 15 seconds by specification (i.e. 15000)
+ * Default is 1 hour. Must not be beolw 60 seconds by specification (i.e. 60000)
  */
 #if !defined SNTP_UPDATE_DELAY || defined __DOXYGEN__
 #define SNTP_UPDATE_DELAY           3600000

@@ -57,6 +57,7 @@
 #include "lwip/udp.h"
 #include "lwip/tcp.h"
 #include "lwip/priv/tcp_priv.h"
+#include "lwip/altcp.h"
 #include "lwip/ip4_frag.h"
 #include "lwip/netbuf.h"
 #include "lwip/api.h"
@@ -238,6 +239,14 @@ memp_init_pool(const struct memp_desc *desc)
 
   *desc->tab = NULL;
   memp = (struct memp*)LWIP_MEM_ALIGN(desc->base);
+#if MEMP_MEM_INIT
+  /* force memset on pool memory */
+  memset(memp, 0, (size_t)desc->num * (MEMP_SIZE + desc->size
+#if MEMP_OVERFLOW_CHECK
+      + MEMP_SANITY_REGION_AFTER_ALIGNED
+#endif
+    ));
+#endif
   /* create a linked list of memp elements */
   for (i = 0; i < desc->num; ++i) {
     memp->next = *desc->tab;
@@ -338,13 +347,13 @@ do_memp_malloc_pool_fn(const struct memp_desc *desc, const char* file, const int
     /* cast through u8_t* to get rid of alignment warnings */
     return ((u8_t*)memp + MEMP_SIZE);
   } else {
-    LWIP_DEBUGF(MEMP_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("memp_malloc: out of memory in pool %s\n", desc->desc));
 #if MEMP_STATS
     desc->stats->err++;
 #endif
+    SYS_ARCH_UNPROTECT(old_level);
+    LWIP_DEBUGF(MEMP_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("memp_malloc: out of memory in pool %s\n", desc->desc));
   }
 
-  SYS_ARCH_UNPROTECT(old_level);
   return NULL;
 }
 

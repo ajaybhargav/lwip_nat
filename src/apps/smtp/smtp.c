@@ -65,7 +65,7 @@
 #include "lwip/altcp_tcp.h"
 #include "lwip/altcp_tls.h"
 
-#include <string.h>
+#include <string.h> /* strnlen, memcpy */
 #include <stdlib.h>
 
 /** TCP poll interval. Unit is 0.5 sec. */
@@ -194,7 +194,7 @@ enum smtp_session_state {
 
 #ifdef LWIP_DEBUG
 /** State-to-string table for debugging */
-const char *smtp_state_str[] = {
+static const char *smtp_state_str[] = {
   "SMTP_NULL",
   "SMTP_HELO",
   "SMTP_AUTH_PLAIN",
@@ -209,7 +209,7 @@ const char *smtp_state_str[] = {
   "SMTP_CLOSED",
 };
 
-const char *smtp_result_strs[] = {
+static const char *smtp_result_strs[] = {
   "SMTP_RESULT_OK",
   "SMTP_RESULT_ERR_UNKNOWN",
   "SMTP_RESULT_ERR_CONNECT",
@@ -346,12 +346,17 @@ smtp_set_server_addr(const char* server)
 {
   size_t len = 0;
   if (server != NULL) {
-    len = strlen(server);
+    /* strnlen: returns length WITHOUT terminating 0 byte OR
+     * SMTP_MAX_SERVERNAME_LEN+1 when string is too long */
+    len = strnlen(server, SMTP_MAX_SERVERNAME_LEN+1);
   }
   if (len > SMTP_MAX_SERVERNAME_LEN) {
     return ERR_MEM;
   }
-  MEMCPY(smtp_server, server, len);
+  if (len != 0) {
+    MEMCPY(smtp_server, server, len);
+  }
+  smtp_server[len] = 0; /* always OK because of smtp_server[SMTP_MAX_SERVERNAME_LEN + 1] */
   return ERR_OK;
 }
 
@@ -483,20 +488,24 @@ smtp_send_mail_alloced(struct smtp_session *s)
    * - only 7-bit ASCII is allowed
    */
   if (smtp_verify(s->to, s->to_len, 0) != ERR_OK) {
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto leave;
   }
   if (smtp_verify(s->from, s->from_len, 0) != ERR_OK) {
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto leave;
   }
   if (smtp_verify(s->subject, s->subject_len, 0) != ERR_OK) {
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto leave;
   }
 #if SMTP_BODYDH
   if (s->bodydh == NULL)
 #endif /* SMTP_BODYDH */
   {
     if (smtp_verify(s->body, s->body_len, 0) != ERR_OK) {
-      return ERR_ARG;
+      err = ERR_ARG;
+      goto leave;
     }
   }
 #endif /* SMTP_CHECK_DATA */
@@ -655,7 +664,7 @@ smtp_send_mail_static(const char *from, const char* to, const char* subject,
 
 
 /** @ingroup smtp
- * Same as smpt_send_mail but takes a struct smtp_send_request as single
+ * Same as smtp_send_mail but takes a struct smtp_send_request as single
  * parameter which contains all the other parameters.
  * To be used with tcpip_callback to send mail from interrupt context or from
  * another thread.
@@ -731,7 +740,7 @@ smtp_verify(const char *data, size_t data_len, u8_t linebreaks_allowed)
 }
 #endif /* SMTP_CHECK_DATA */
 
-/** Frees the smpt_session and calls the callback function */
+/** Frees the smtp_session and calls the callback function */
 static void
 smtp_free(struct smtp_session *s, u8_t result, u16_t srv_err, err_t err)
 {
@@ -877,7 +886,7 @@ smtp_dns_found(const char* hostname, const ip_addr_t *ipaddr, void *arg)
 #if SMTP_SUPPORT_AUTH_PLAIN || SMTP_SUPPORT_AUTH_LOGIN
 
 /** Table 6-bit-index-to-ASCII used for base64-encoding */
-const u8_t base64_table[] = {
+static const char base64_table[] = {
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
   'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
   'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
@@ -905,10 +914,11 @@ smtp_base64_encode(char* target, size_t target_len, const char* source, size_t s
   LWIP_ASSERT("target_len is too short", target_len >= len);
 
   for (i = 0; i < source_len_b64; i++) {
-    u8_t b = (i < source_len ? source[i] : 0);
+    u8_t b = (i < source_len ? (u8_t)source[i] : 0);
     for (j = 7; j >= 0; j--, x--) {
-      u8_t shift = ((b & (1 << j)) != 0) ? 1 : 0;
-      current |= shift << x;
+      if ((b & (1 << j)) != 0) {
+        current = (u8_t)(current | (1U << x));
+      }
       if (x == 0) {
         target[target_idx++] = base64_table[current];
         x = 6;
@@ -978,15 +988,23 @@ again:
    * the same on every line. */
 
   /* find CRLF */
-  crlf = pbuf_memfind(s->p, SMTP_CRLF, SMTP_CRLF_LEN, offset + 4);
+  if (offset > 0xFFFF - 4) {
+    /* would overflow */
+    return ERR_VAL;
+  }
+  crlf = pbuf_memfind(s->p, SMTP_CRLF, SMTP_CRLF_LEN, (u16_t)(offset + 4));
   if (crlf == 0xFFFF) {
     /* no CRLF found */
     return ERR_VAL;
   }
-  sp = pbuf_get_at(s->p, offset + 3);
+  sp = pbuf_get_at(s->p, (u16_t)(offset + 3));
   if (sp == '-') {
     /* no space after response code -> try next line */
-    offset = crlf + 2;
+    offset = (u16_t)(crlf + 2);
+    if (offset < crlf) {
+      /* overflow */
+      return ERR_VAL;
+    }
     goto again;
   } else if (sp == ' ') {
     /* CRLF found after response code + space -> valid response */
@@ -1006,7 +1024,7 @@ smtp_prepare_helo(struct smtp_session *s, u16_t *tx_buf_len, struct altcp_pcb *p
   ipa_len = strlen(ipa);
   LWIP_ASSERT("string too long", ipa_len <= (SMTP_TX_BUF_LEN-SMTP_CMD_EHLO_1_LEN-SMTP_CMD_EHLO_2_LEN));
 
-  *tx_buf_len = SMTP_CMD_EHLO_1_LEN + (u16_t)ipa_len + SMTP_CMD_EHLO_2_LEN;
+  *tx_buf_len = (u16_t)(SMTP_CMD_EHLO_1_LEN + (u16_t)ipa_len + SMTP_CMD_EHLO_2_LEN);
   LWIP_ASSERT("tx_buf overflow detected", *tx_buf_len <= SMTP_TX_BUF_LEN);
 
   SMEMCPY(s->tx_buf, SMTP_CMD_EHLO_1, SMTP_CMD_EHLO_1_LEN);
@@ -1032,7 +1050,7 @@ smtp_prepare_auth_or_mail(struct smtp_session *s, u16_t *tx_buf_len)
     u16_t crlf = pbuf_memfind(s->p, SMTP_CRLF, SMTP_CRLF_LEN, auth);
     if ((crlf != 0xFFFF) && (crlf > auth)) {
       /* use tx_buf temporarily */
-      u16_t copied = pbuf_copy_partial(s->p, s->tx_buf, crlf - auth, auth);
+      u16_t copied = pbuf_copy_partial(s->p, s->tx_buf, (u16_t)(crlf - auth), auth);
       if (copied != 0) {
         char *sep = s->tx_buf + SMTP_KEYWORD_AUTH_LEN;
         s->tx_buf[copied] = 0;
@@ -1048,7 +1066,7 @@ smtp_prepare_auth_or_mail(struct smtp_session *s, u16_t *tx_buf_len)
             SMTP_TX_BUF_LEN - SMTP_CMD_AUTHPLAIN_1_LEN, SMTP_AUTH_PLAIN_DATA(s),
             SMTP_AUTH_PLAIN_LEN(s));
           LWIP_ASSERT("string too long", auth_len <= (SMTP_TX_BUF_LEN-SMTP_CMD_AUTHPLAIN_1_LEN-SMTP_CMD_AUTHPLAIN_2_LEN));
-          *tx_buf_len = SMTP_CMD_AUTHPLAIN_1_LEN + SMTP_CMD_AUTHPLAIN_2_LEN + (u16_t)auth_len;
+          *tx_buf_len = (u16_t)(SMTP_CMD_AUTHPLAIN_1_LEN + SMTP_CMD_AUTHPLAIN_2_LEN + (u16_t)auth_len);
           SMEMCPY(&s->tx_buf[SMTP_CMD_AUTHPLAIN_1_LEN + auth_len], SMTP_CMD_AUTHPLAIN_2,
             SMTP_CMD_AUTHPLAIN_2_LEN);
           return SMTP_AUTH_PLAIN;
@@ -1081,8 +1099,8 @@ smtp_prepare_auth_login_uname(struct smtp_session *s, u16_t *tx_buf_len)
     SMTP_USERNAME(s), strlen(SMTP_USERNAME(s)));
   /* @todo: support base64-encoded longer than 64k */
   LWIP_ASSERT("string too long", base64_len <= 0xffff);
-  LWIP_ASSERT("tx_buf overflow detected", base64_len + SMTP_CRLF_LEN <= SMTP_TX_BUF_LEN);
-  *tx_buf_len = (u16_t)base64_len + SMTP_CRLF_LEN;
+  LWIP_ASSERT("tx_buf overflow detected", base64_len <= SMTP_TX_BUF_LEN - SMTP_CRLF_LEN);
+  *tx_buf_len = (u16_t)(base64_len + SMTP_CRLF_LEN);
 
   SMEMCPY(&s->tx_buf[base64_len], SMTP_CRLF, SMTP_CRLF_LEN);
   s->tx_buf[*tx_buf_len] = 0;
@@ -1097,8 +1115,8 @@ smtp_prepare_auth_login_pass(struct smtp_session *s, u16_t *tx_buf_len)
     SMTP_PASS(s), strlen(SMTP_PASS(s)));
   /* @todo: support base64-encoded longer than 64k */
   LWIP_ASSERT("string too long", base64_len <= 0xffff);
-  LWIP_ASSERT("tx_buf overflow detected", base64_len + SMTP_CRLF_LEN <= SMTP_TX_BUF_LEN);
-  *tx_buf_len = (u16_t)base64_len + SMTP_CRLF_LEN;
+  LWIP_ASSERT("tx_buf overflow detected", base64_len <= SMTP_TX_BUF_LEN - SMTP_CRLF_LEN);
+  *tx_buf_len = (u16_t)(base64_len + SMTP_CRLF_LEN);
 
   SMEMCPY(&s->tx_buf[base64_len], SMTP_CRLF, SMTP_CRLF_LEN);
   s->tx_buf[*tx_buf_len] = 0;
@@ -1111,8 +1129,8 @@ static enum smtp_session_state
 smtp_prepare_mail(struct smtp_session *s, u16_t *tx_buf_len)
 {
   char *target = s->tx_buf;
-  *tx_buf_len = SMTP_CMD_MAIL_1_LEN + SMTP_CMD_MAIL_2_LEN + s->from_len;
-  LWIP_ASSERT("tx_buf overflow detected", *tx_buf_len <= SMTP_TX_BUF_LEN);
+  LWIP_ASSERT("tx_buf overflow detected", s->from_len <= (SMTP_TX_BUF_LEN - SMTP_CMD_MAIL_1_LEN - SMTP_CMD_MAIL_2_LEN));
+  *tx_buf_len = (u16_t)(SMTP_CMD_MAIL_1_LEN + SMTP_CMD_MAIL_2_LEN + s->from_len);
   target[*tx_buf_len] = 0;
 
   SMEMCPY(target, SMTP_CMD_MAIL_1, SMTP_CMD_MAIL_1_LEN);
@@ -1128,8 +1146,8 @@ static enum smtp_session_state
 smtp_prepare_rcpt(struct smtp_session *s, u16_t *tx_buf_len)
 {
   char *target = s->tx_buf;
-  *tx_buf_len = SMTP_CMD_RCPT_1_LEN + SMTP_CMD_RCPT_2_LEN + s->to_len;
-  LWIP_ASSERT("tx_buf overflow detected", *tx_buf_len <= SMTP_TX_BUF_LEN);
+  LWIP_ASSERT("tx_buf overflow detected", s->to_len <= (SMTP_TX_BUF_LEN - SMTP_CMD_RCPT_1_LEN - SMTP_CMD_RCPT_2_LEN));
+  *tx_buf_len = (u16_t)(SMTP_CMD_RCPT_1_LEN + SMTP_CMD_RCPT_2_LEN + s->to_len);
   target[*tx_buf_len] = 0;
 
   SMEMCPY(target, SMTP_CMD_RCPT_1, SMTP_CMD_RCPT_1_LEN);
@@ -1145,10 +1163,11 @@ static enum smtp_session_state
 smtp_prepare_header(struct smtp_session *s, u16_t *tx_buf_len)
 {
   char *target = s->tx_buf;
-  *tx_buf_len = SMTP_CMD_HEADER_1_LEN + SMTP_CMD_HEADER_2_LEN +
+  int len = SMTP_CMD_HEADER_1_LEN + SMTP_CMD_HEADER_2_LEN +
     SMTP_CMD_HEADER_3_LEN + SMTP_CMD_HEADER_4_LEN + s->from_len + s->to_len +
     s->subject_len;
-  LWIP_ASSERT("tx_buf overflow detected", *tx_buf_len <= SMTP_TX_BUF_LEN);
+  LWIP_ASSERT("tx_buf overflow detected", len > 0 && len <= SMTP_TX_BUF_LEN);
+  *tx_buf_len = (u16_t)len;
   target[*tx_buf_len] = 0;
 
   SMEMCPY(target, SMTP_CMD_HEADER_1, SMTP_CMD_HEADER_1_LEN);
@@ -1192,7 +1211,7 @@ smtp_send_body(struct smtp_session *s, struct altcp_pcb *pcb)
     } else
 #endif /* SMTP_BODYDH */
     {
-      u16_t send_len = s->body_len - s->body_sent;
+      u16_t send_len = (u16_t)(s->body_len - s->body_sent);
       if (send_len > 0) {
         u16_t snd_buf = altcp_sndbuf(pcb);
         if (send_len > snd_buf) {
@@ -1203,7 +1222,7 @@ smtp_send_body(struct smtp_session *s, struct altcp_pcb *pcb)
           err = altcp_write(pcb, &s->body[s->body_sent], (u16_t)send_len, TCP_WRITE_FLAG_COPY);
           if (err == ERR_OK) {
             s->timer = SMTP_TIMEOUT_DATABLOCK;
-            s->body_sent += send_len;
+            s->body_sent = (u16_t)(s->body_sent + send_len);
             if (s->body_sent < s->body_len) {
               LWIP_DEBUGF(SMTP_DEBUG_STATE, ("smtp_send_body: %d of %d bytes written\n",
                 s->body_sent, s->body_len));
@@ -1414,13 +1433,13 @@ smtp_process(void *arg, struct altcp_pcb *pcb, struct pbuf *p)
  *           0 no data has been written
  */
 static int
-smtp_send_bodyh_data(struct altcp_pcb *pcb, char **from, u16_t *howmany)
+smtp_send_bodyh_data(struct altcp_pcb *pcb, const char **from, u16_t *howmany)
 {
   err_t err;
   u16_t len = *howmany;
 
-  len = (u16_t)LWIP_MIN(len, tcp_sndbuf(pcb));
-  err = tcp_write(pcb, *from, len, TCP_WRITE_FLAG_COPY);
+  len = (u16_t)LWIP_MIN(len, altcp_sndbuf(pcb));
+  err = altcp_write(pcb, *from, len, TCP_WRITE_FLAG_COPY);
   if (err == ERR_OK) {
     *from += len;
     if ((*howmany -= len) > 0) {
@@ -1447,6 +1466,7 @@ smtp_send_mail_bodycback(const char *from, const char* to, const char* subject,
   memset(s, 0, sizeof(struct smtp_session));
   s->bodydh = (struct smtp_bodydh_state*)SMTP_BODYDH_MALLOC(sizeof(struct smtp_bodydh_state));
   if (s->bodydh == NULL) {
+    SMTP_STATE_FREE(s);
     return ERR_MEM;
   }
   memset(s->bodydh, 0, sizeof(struct smtp_bodydh));
@@ -1484,7 +1504,7 @@ smtp_send_body_data_handler(struct smtp_session *s, struct altcp_pcb *pcb)
   /* resume any leftovers from prior memory constraints */
   if (s->body_len) {
     LWIP_DEBUGF(SMTP_DEBUG_TRACE, ("smtp_send_body_data_handler: resume\n"));
-    if((res = smtp_send_bodyh_data(pcb, (char **)&s->body, &s->body_len))
+    if((res = smtp_send_bodyh_data(pcb, (const char **)&s->body, &s->body_len))
         != BDHALLDATASENT) {
       s->body_sent = s->body_len - 1;
       return;
@@ -1504,7 +1524,7 @@ smtp_send_body_data_handler(struct smtp_session *s, struct altcp_pcb *pcb)
       s->body_len = bdh->exposed.length;
       LWIP_DEBUGF(SMTP_DEBUG_TRACE, ("smtp_send_body_data_handler: trying to send %u bytes\n", (unsigned int)s->body_len));
     } while (s->body_len &&
-            ((res = smtp_send_bodyh_data(pcb, (char **)&s->body, &s->body_len)) == BDHALLDATASENT)
+            ((res = smtp_send_bodyh_data(pcb, (const char **)&s->body, &s->body_len)) == BDHALLDATASENT)
             && (bdh->state != BDH_STOP));
   }
   if ((bdh->state != BDH_SENDING) && (ret != BDHSOMEDATASENT)) {

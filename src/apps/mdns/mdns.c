@@ -528,7 +528,7 @@ mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr)
   }
   memset(domain, 0, sizeof(struct mdns_domain));
   ptr = (const u8_t *) addr;
-  for (i = sizeof(ip6_addr_t) - 1; i >= 0; i--) {
+  for (i = sizeof(ip6_addr_p_t) - 1; i >= 0; i--) {
     char buf;
     u8_t byte = ptr[i];
     int j;
@@ -1163,7 +1163,7 @@ mdns_add_aaaa_answer(struct mdns_outpacket *reply, u16_t cache_flush, struct net
   struct mdns_domain host;
   mdns_build_host_domain(&host, NETIF_TO_HOST(netif));
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with AAAA record\n"));
-  return mdns_add_answer(reply, &host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, cache_flush, (NETIF_TO_HOST(netif))->dns_ttl, (const u8_t *) netif_ip6_addr(netif, addrindex), sizeof(ip6_addr_t), NULL);
+  return mdns_add_answer(reply, &host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, cache_flush, (NETIF_TO_HOST(netif))->dns_ttl, (const u8_t *) netif_ip6_addr(netif, addrindex), sizeof(ip6_addr_p_t), NULL);
 }
 
 /** Write a x.y.z.ip6.arpa -> hostname.local PTR RR to outpacket */
@@ -1628,7 +1628,7 @@ mdns_handle_question(struct mdns_packet *pkt)
 #endif
       } else if (match & REPLY_HOST_AAAA) {
 #if LWIP_IPV6
-        if (ans.rd_length == sizeof(ip6_addr_t) &&
+        if (ans.rd_length == sizeof(ip6_addr_p_t) &&
             /* TODO this clears all AAAA responses if first addr is set as known */
             pbuf_memcmp(pkt->pbuf, ans.rd_offset, netif_ip6_addr(pkt->netif, 0), ans.rd_length) == 0) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: AAAA\n"));
@@ -1912,12 +1912,11 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
   LWIP_ERROR("mdns_resp_add_netif: Hostname too long", (strlen(hostname) <= MDNS_LABEL_MAXLEN), return ERR_VAL);
 
   LWIP_ASSERT("mdns_resp_add_netif: Double add", NETIF_TO_HOST(netif) == NULL);
-  mdns = (struct mdns_host *) mem_malloc(sizeof(struct mdns_host));
+  mdns = (struct mdns_host *) mem_calloc(1, sizeof(struct mdns_host));
   LWIP_ERROR("mdns_resp_add_netif: Alloc failed", (mdns != NULL), return ERR_MEM);
   
   netif_set_client_data(netif, mdns_netif_client_id, mdns);
 
-  memset(mdns, 0, sizeof(struct mdns_host));
   MEMCPY(&mdns->name, hostname, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(hostname)));
   mdns->dns_ttl = dns_ttl;
 
@@ -1994,13 +1993,13 @@ mdns_resp_remove_netif(struct netif *netif)
  * @param txt_fn Callback to get TXT data. Will be called each time a TXT reply is created to
  *               allow dynamic replies.
  * @param txt_data Userdata pointer for txt_fn
- * @return ERR_OK if the service was added to the netif, an err_t otherwise
+ * @return service_id if the service was added to the netif, an err_t otherwise
  */
-err_t
+s8_t
 mdns_resp_add_service(struct netif *netif, const char *name, const char *service, enum mdns_sd_proto proto, u16_t port, u32_t dns_ttl, service_get_txt_fn_t txt_fn, void *txt_data)
 {
-  int i;
-  int slot = -1;
+  s8_t i;
+  s8_t slot = -1;
   struct mdns_service *srv;
   struct mdns_host* mdns;
 
@@ -2020,10 +2019,8 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
   }
   LWIP_ERROR("mdns_resp_add_service: Service list full (increase MDNS_MAX_SERVICES)", (slot >= 0), return ERR_MEM);
 
-  srv = (struct mdns_service*)mem_malloc(sizeof(struct mdns_service));
+  srv = (struct mdns_service*)mem_calloc(1, sizeof(struct mdns_service));
   LWIP_ERROR("mdns_resp_add_service: Alloc failed", (srv != NULL), return ERR_MEM);
-
-  memset(srv, 0, sizeof(struct mdns_service));
 
   MEMCPY(&srv->name, name, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(name)));
   MEMCPY(&srv->service, service, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(service)));
@@ -2042,7 +2039,30 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
 #if LWIP_IPV4
   mdns_announce(netif, IP4_ADDR_ANY);
 #endif
+  return slot;
+}
 
+/**
+ * @ingroup mdns
+ * Delete a service on the selected network interface.
+ * @param netif The network interface on which service should be removed
+ * @param slot The service slot number returned by mdns_resp_add_service
+ * @return ERR_OK if the service was removed from the netif, an err_t otherwise
+ */
+err_t
+mdns_resp_del_service(struct netif *netif, s8_t slot)
+{
+  struct mdns_host* mdns;
+  struct mdns_service *srv;
+  LWIP_ASSERT("mdns_resp_del_service: netif != NULL", netif);
+  mdns = NETIF_TO_HOST(netif);
+  LWIP_ERROR("mdns_resp_del_service: Not an mdns netif", (mdns != NULL), return ERR_VAL);
+  LWIP_ERROR("mdns_resp_del_service: Invalid Service ID", (slot >= 0) && (slot < MDNS_MAX_SERVICES), return ERR_VAL);
+  LWIP_ERROR("mdns_resp_del_service: Invalid Service ID", (mdns->services[slot] != NULL), return ERR_VAL);
+
+  srv = mdns->services[slot];
+  mdns->services[slot] = NULL;
+  mem_free(srv);
   return ERR_OK;
 }
 

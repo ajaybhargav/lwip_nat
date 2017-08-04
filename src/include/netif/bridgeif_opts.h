@@ -50,7 +50,7 @@
  * to call directly into bridgeif code and on top of that, directly call into
  * the selected forwarding port's 'linkoutput' function.
  * This means that the bridgeif input/output path is protected from concurrent access
- * but as well, the port netif's drivers must correctly handle concurrent access!
+ * but as well, *all* bridge port netif's drivers must correctly handle concurrent access!
  * == 0: get into tcpip_thread for every input packet (no multithreading)
  * ATTENTION: as ==0 relies on tcpip.h, the default depends on NO_SYS setting
  */
@@ -69,6 +69,8 @@
 /** BRIDGEIF_MAX_PORTS: this is used to create a typedef used for forwarding
  * bit-fields: the number of bits required is this + 1 (for the internal/cpu port)
  * (63 is the maximum, resulting in an u64_t for the bit mask)
+ * ATTENTION: this controls the maximum number of the implementation only!
+ * The max. number of ports per bridge must still be passed via netif_add parameter!
  */
 #ifndef BRIDGEIF_MAX_PORTS
 #define BRIDGEIF_MAX_PORTS                  7

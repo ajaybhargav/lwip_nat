@@ -18,11 +18,13 @@
 static void
 pbuf_setup(void)
 {
+  lwip_check_ensure_no_alloc(SKIP_POOL(MEMP_SYS_TIMEOUT));
 }
 
 static void
 pbuf_teardown(void)
 {
+  lwip_check_ensure_no_alloc(SKIP_POOL(MEMP_SYS_TIMEOUT));
 }
 
 
@@ -37,6 +39,36 @@ static u8_t testbuf_3[TESTBUFSIZE_3];
 static u8_t testbuf_3a[TESTBUFSIZE_3];
 
 /* Test functions */
+START_TEST(test_pbuf_alloc_zero_pbufs)
+{
+  struct pbuf *p;
+  LWIP_UNUSED_ARG(_i);
+
+  p = pbuf_alloc(PBUF_RAW, 0, PBUF_ROM);
+  fail_unless(p != NULL);
+  if (p != NULL) {
+    pbuf_free(p);
+  }
+
+  p = pbuf_alloc(PBUF_RAW, 0, PBUF_RAM);
+  fail_unless(p != NULL);
+  if (p != NULL) {
+    pbuf_free(p);
+  }
+
+  p = pbuf_alloc(PBUF_RAW, 0, PBUF_REF);
+  fail_unless(p != NULL);
+  if (p != NULL) {
+    pbuf_free(p);
+  }
+
+  p = pbuf_alloc(PBUF_RAW, 0, PBUF_POOL);
+  fail_unless(p != NULL);
+  if (p != NULL) {
+    pbuf_free(p);
+  }
+}
+END_TEST
 
 /** Call pbuf_copy on a pbuf with zero length */
 START_TEST(test_pbuf_copy_zero_pbuf)
@@ -192,6 +224,7 @@ START_TEST(test_pbuf_take_at_edge)
     fail_unless(out[i] == testdata[i],
       "Bad data at pos %d, was %02X, expected %02X", p->len+i, out[i], testdata[i]);
   }
+  pbuf_free(p);
 }
 END_TEST
 
@@ -221,6 +254,7 @@ START_TEST(test_pbuf_get_put_at_edge)
   getdata = pbuf_get_at(p, p->len);
   fail_unless(*out == getdata,
     "pbuf_get_at() returned bad data at pos %d, was %02X, expected %02X", p->len, getdata, *out);
+  pbuf_free(p);
 }
 END_TEST
 
@@ -229,6 +263,7 @@ Suite *
 pbuf_suite(void)
 {
   testfunc tests[] = {
+    TESTFUNC(test_pbuf_alloc_zero_pbufs),
     TESTFUNC(test_pbuf_copy_zero_pbuf),
     TESTFUNC(test_pbuf_split_64k_on_small_pbufs),
     TESTFUNC(test_pbuf_queueing_bigger_than_64k),

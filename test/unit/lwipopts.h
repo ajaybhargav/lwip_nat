@@ -40,6 +40,7 @@
 #define LWIP_NETCONN                    !NO_SYS
 #define LWIP_SOCKET                     !NO_SYS
 #define LWIP_NETCONN_FULLDUPLEX         LWIP_SOCKET
+#define LWIP_NETBUF_RECVINFO            1
 #define LWIP_HAVE_LOOPIF                1
 #define TCPIP_THREAD_TEST
 
@@ -63,5 +64,10 @@
 
 /* Minimal changes to opt.h required for etharp unit tests: */
 #define ETHARP_SUPPORT_STATIC_ENTRIES   1
+
+#define MEMP_NUM_SYS_TIMEOUT            (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+
+/* MIB2 stats are required to check IPv4 reassembly results */
+#define MIB2_STATS                      1
 
 #endif /* LWIP_HDR_LWIPOPTS_H */

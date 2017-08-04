@@ -199,7 +199,7 @@ igmp_report_groups(struct netif *netif)
   if(group != NULL) {
     group = group->next;
   }
-  
+
   while (group != NULL) {
     igmp_delaying_member(group, IGMP_JOIN_DELAYING_MEMBER_TMR);
     group = group->next;
@@ -207,7 +207,7 @@ igmp_report_groups(struct netif *netif)
 }
 
 /**
- * Search for a group in the global igmp_group_list
+ * Search for a group in the netif's igmp group list
  *
  * @param ifp the network interface for which to look
  * @param addr the group ip address to search for
@@ -252,7 +252,7 @@ igmp_lookup_group(struct netif *ifp, const ip4_addr_t *addr)
     /* Group already exists. */
     return group;
   }
-  
+
   /* Group doesn't exist yet, create a new one */
   group = (struct igmp_group *)memp_malloc(MEMP_IGMP_GROUP);
   if (group != NULL) {
@@ -262,7 +262,7 @@ igmp_lookup_group(struct netif *ifp, const ip4_addr_t *addr)
     group->last_reporter_flag = 0;
     group->use                = 0;
 
-    /* Ensure allsystems group is always first in list */    
+    /* Ensure allsystems group is always first in list */
     if (list_head == NULL) {
       /* this is the first entry in linked list */
       LWIP_ASSERT("igmp_lookup_group: first group must be allsystems",
@@ -286,9 +286,9 @@ igmp_lookup_group(struct netif *ifp, const ip4_addr_t *addr)
 }
 
 /**
- * Remove a group in the global igmp_group_list, but don't free it yet
+ * Remove a group from netif's igmp group list, but don't free it yet
  *
- * @param group the group to remove from the global igmp_group_list
+ * @param group the group to remove from the netif's igmp group list
  * @return ERR_OK if group was removed from the list, an err_t otherwise
  */
 static err_t
@@ -304,7 +304,7 @@ igmp_remove_group(struct netif* netif, struct igmp_group *group)
       break;
     }
   }
-  /* Group not found in the global igmp_group_list */
+  /* Group not found in netif's igmp group list */
   if (tmp_group == NULL) {
     err = ERR_ARG;
   }
@@ -684,7 +684,7 @@ static void
 igmp_start_timer(struct igmp_group *group, u8_t max_time)
 {
 #ifdef LWIP_RAND
-  group->timer = max_time > 2 ? (LWIP_RAND() % max_time) : 1;
+  group->timer = (u16_t)(max_time > 2 ? (LWIP_RAND() % max_time) : 1);
 #else /* LWIP_RAND */
   /* ATTENTION: use this only if absolutely necessary! */
   group->timer = max_time / 2;

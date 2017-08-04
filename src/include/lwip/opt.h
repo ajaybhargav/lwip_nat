@@ -249,6 +249,15 @@
 #endif
 
 /**
+ * MEMP_MEM_INIT==1: Force use of memset to initialize pool memory.
+ * Useful if pool are moved in uninitialized section of memory. This will ensure
+ * default values in pcbs struct are well initialized in all conditions.
+ */
+#if !defined MEMP_MEM_INIT || defined __DOXYGEN__
+#define MEMP_MEM_INIT                 0
+#endif
+
+/**
  * MEM_ALIGNMENT: should be set to the alignment of the CPU
  *    4 byte alignment -> \#define MEM_ALIGNMENT 4
  *    2 byte alignment -> \#define MEM_ALIGNMENT 2
@@ -400,6 +409,16 @@
 #endif
 
 /**
+ * MEMP_NUM_ALTCP_PCB: the number of simultaneously active altcp layer pcbs.
+ * (requires the LWIP_ALTCP option)
+ * Connections with multiple layers require more than one altcp_pcb (e.g. TLS
+ * over TCP requires 2 altcp_pcbs, one for TLS and one for TCP).
+ */
+#if !defined MEMP_NUM_ALTCP_PCB || defined __DOXYGEN__
+#define MEMP_NUM_ALTCP_PCB              MEMP_NUM_TCP_PCB
+#endif
+
+/**
  * MEMP_NUM_REASSDATA: the number of IP packets simultaneously queued for
  * reassembly (whole packets, not fragments!)
  */
@@ -439,12 +458,18 @@
 #endif
 
 /**
+ * The number of sys timeouts used by the core stack (not apps)
+ * The default number of timeouts is calculated here for all enabled modules.
+ */
+#define LWIP_NUM_SYS_TIMEOUT_INTERNAL   (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + PPP_NUM_TIMEOUTS + (LWIP_IPV6 * (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD)))
+
+/**
  * MEMP_NUM_SYS_TIMEOUT: the number of simultaneously active timeouts.
  * The default number of timeouts is calculated here for all enabled modules.
  * The formula expects settings to be either '0' or '1'.
  */
 #if !defined MEMP_NUM_SYS_TIMEOUT || defined __DOXYGEN__
-#define MEMP_NUM_SYS_TIMEOUT            (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + (PPP_SUPPORT*6*MEMP_NUM_PPP_PCB) + (LWIP_IPV6 ? (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD) : 0))
+#define MEMP_NUM_SYS_TIMEOUT            LWIP_NUM_SYS_TIMEOUT_INTERNAL
 #endif
 
 /**
@@ -1198,6 +1223,27 @@
 #endif
 
 /**
+ * LWIP_TCP_SACK_OUT==1: TCP will support sending selective acknowledgements (SACKs).
+ */
+#if !defined LWIP_TCP_SACK_OUT || defined __DOXYGEN__
+#define LWIP_TCP_SACK_OUT               0
+#endif
+
+/**
+ * LWIP_TCP_MAX_SACK_NUM: The maximum number of SACK values to include in TCP segments.
+ * Must be at least 1, but is only used if LWIP_TCP_SACK_OUT is enabled.
+ * NOTE: Even though we never send more than 3 or 4 SACK ranges in a single segment
+ * (depending on other options), setting this option to values greater than 4 is not pointless.
+ * This is basically the max number of SACK ranges we want to keep track of.
+ * As new data is delivered, some of the SACK ranges may be removed or merged.
+ * In that case some of those older SACK ranges may be used again.
+ * The amount of memory used to store SACK ranges is LWIP_TCP_MAX_SACK_NUM * 8 bytes for each TCP PCB.
+ */
+#if !defined LWIP_TCP_MAX_SACK_NUM || defined __DOXYGEN__
+#define LWIP_TCP_MAX_SACK_NUM           4
+#endif
+
+/**
  * TCP_MSS: TCP Maximum segment size. (default is 536, a conservative default,
  * you might want to increase this.)
  * For the receive side, this MSS is advertised to the remote side
@@ -1408,7 +1454,7 @@
  * for an additional encapsulation header before ethernet headers (e.g. 802.11)
  */
 #if !defined PBUF_LINK_ENCAPSULATION_HLEN || defined __DOXYGEN__
-#define PBUF_LINK_ENCAPSULATION_HLEN    0u
+#define PBUF_LINK_ENCAPSULATION_HLEN    0
 #endif
 
 /**
@@ -1509,13 +1555,22 @@
 #endif
 
 /**
- * LWIP_NETIF_TX_SINGLE_PBUF: if this is set to 1, lwIP tries to put all data
+ * LWIP_NETIF_TX_SINGLE_PBUF: if this is set to 1, lwIP *tries* to put all data
  * to be sent into one single pbuf. This is for compatibility with DMA-enabled
  * MACs that do not support scatter-gather.
  * Beware that this might involve CPU-memcpy before transmitting that would not
  * be needed without this flag! Use this only if you need to!
  *
- * @todo: TCP and IP-frag do not work with this, yet:
+ * ATTENTION: a driver should *NOT* rely on getting single pbufs but check TX
+ * pbufs for being in one piece. If not, @ref pbuf_clone can be used to get
+ * a single pbuf:
+ *   if (p->next != NULL) {
+ *     struct pbuf *q = pbuf_clone(PBUF_RAW, PBUF_RAM, p);
+ *     if (q == NULL) {
+ *       return ERR_MEM;
+ *     }
+ *     p = q; ATTENTION: do NOT free the old 'p' as the ref belongs to the caller!
+ *   }
  */
 #if !defined LWIP_NETIF_TX_SINGLE_PBUF || defined __DOXYGEN__
 #define LWIP_NETIF_TX_SINGLE_PBUF             0
@@ -1523,7 +1578,7 @@
 
 /**
  * LWIP_NUM_NETIF_CLIENT_DATA: Number of clients that may store
- * data in client_data member array of struct netif.
+ * data in client_data member array of struct netif (max. 256).
  */
 #if !defined LWIP_NUM_NETIF_CLIENT_DATA || defined __DOXYGEN__
 #define LWIP_NUM_NETIF_CLIENT_DATA            0
@@ -1803,13 +1858,6 @@
  */
 #if !defined LWIP_SOCKET || defined __DOXYGEN__
 #define LWIP_SOCKET                     1
-#endif
-
-/** LWIP_SOCKET_SET_ERRNO==1: Set errno when socket functions cannot complete
- * successfully, as required by POSIX. Default is POSIX-compliant.
- */
-#if !defined LWIP_SOCKET_SET_ERRNO || defined __DOXYGEN__
-#define LWIP_SOCKET_SET_ERRNO           1
 #endif
 
 /**
@@ -2702,6 +2750,55 @@
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_UNKNOWN_ETH_PROTOCOL(pbuf, netif)
+#endif
+
+/**
+ * LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type):
+ * Called from various dhcp functions when sending a DHCP message.
+ * This hook is called just before the DHCP message trailer is added, so the
+ * options are at the end of a DHCP message.
+ * Arguments:
+ * - netif: struct netif that the packet will be sent through
+ * - dhcp: struct dhcp on that netif
+ * - state: current dhcp state (dhcp_state_enum_t as an u8_t)
+ * - msg: struct dhcp_msg that will be sent
+ * - msg_type: dhcp message type to be sent (u8_t)
+ * Returns void
+ *
+ * Options need to appended like this:
+ *   LWIP_ASSERT("dhcp option overflow", dhcp->options_out_len + option_len + 2 <= DHCP_OPTIONS_LEN);
+ *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_number&gt;;
+ *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_len&gt;;
+ *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_bytes&gt;;
+ *   [...]
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type)
+#endif
+
+/**
+ * LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset):
+ * Called from dhcp_parse_reply when receiving a DHCP message.
+ * This hook is called for every option in the received message that is not handled internally.
+ * Arguments:
+ * - netif: struct netif that the packet will be sent through
+ * - dhcp: struct dhcp on that netif
+ * - state: current dhcp state (dhcp_state_enum_t as an u8_t)
+ * - msg: struct dhcp_msg that was received
+ * - msg_type: dhcp message type received (u8_t, ATTENTION: only valid after
+ *             the message type option has been parsed!)
+ * - option: option value (u8_t)
+ * - len: option data length (u8_t)
+ * - pbuf: pbuf where option data is contained
+ * - offset: offset in pbuf where option *data* begins
+ * Returns void
+ *
+ * A nice way to get the option contents is pbuf_get_contiguous():
+ *  u8_t buf[32];
+ *  u8_t *ptr = (u8_t*)pbuf_get_contiguous(p, buf, sizeof(buf), LWIP_MIN(option_len, sizeof(buf)), offset);
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset)
 #endif
 /**
  * @}

@@ -1,5 +1,6 @@
 #include "lwip_check.h"
 
+#include "ip4/test_ip4.h"
 #include "udp/test_udp.h"
 #include "tcp/test_tcp.h"
 #include "tcp/test_tcp_oos.h"
@@ -8,6 +9,7 @@
 #include "etharp/test_etharp.h"
 #include "dhcp/test_dhcp.h"
 #include "mdns/test_mdns.h"
+#include "mqtt/test_mqtt.h"
 #include "api/test_sockets.h"
 
 #include "lwip/init.h"
@@ -31,6 +33,21 @@ Suite* create_suite(const char* name, testfunc *tests, size_t num_tests, SFun se
   return s;
 }
 
+void lwip_check_ensure_no_alloc(unsigned int skip)
+{
+  int i;
+  unsigned int mask;
+
+  if (!(skip & SKIP_HEAP)) {
+    fail_unless(lwip_stats.mem.used == 0);
+  }
+  for (i = 0, mask = 1; i < MEMP_MAX; i++, mask <<= 1) {
+    if (!(skip & mask)) {
+      fail_unless(lwip_stats.memp[i]->used == 0);
+    }
+  }
+}
+
 #ifdef LWIP_UNITTESTS_LIB
 int lwip_unittests_run(void)
 #else
@@ -41,6 +58,7 @@ int main(void)
   SRunner *sr;
   size_t i;
   suite_getter_fn* suites[] = {
+    ip4_suite,
     udp_suite,
     tcp_suite,
     tcp_oos_suite,
@@ -49,6 +67,7 @@ int main(void)
     etharp_suite,
     dhcp_suite,
     mdns_suite,
+    mqtt_suite,
     sockets_suite
   };
   size_t num = sizeof(suites)/sizeof(void*);

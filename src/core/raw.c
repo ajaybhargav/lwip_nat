@@ -68,6 +68,12 @@ static u8_t
 raw_input_local_match(struct raw_pcb *pcb, u8_t broadcast)
 {
   LWIP_UNUSED_ARG(broadcast); /* in IPv6 only case */
+  
+  /* check if PCB is bound to specific netif */
+  if ((pcb->netif_idx != NETIF_NO_INDEX) &&
+      (pcb->netif_idx != netif_get_index(ip_data.current_input_netif))) {
+    return 0;
+  }
 
 #if LWIP_IPV4 && LWIP_IPV6
   /* Dual-stack: PCBs listening to any IP type also listen to any IP address */
@@ -229,6 +235,28 @@ raw_bind(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 
 /**
  * @ingroup raw_raw
+ * Bind an RAW PCB to a specific netif.
+ * After calling this function, all packets received via this PCB
+ * are guaranteed to have come in via the specified netif, and all
+ * outgoing packets will go out via the specified netif.
+ *
+ * @param pcb RAW PCB to be bound with netif.
+ * @param netif netif to bind to. Can be NULL.
+ *
+ * @see raw_disconnect()
+ */
+void
+raw_bind_netif(struct raw_pcb *pcb, const struct netif *netif)
+{
+  if (netif != NULL) {
+    pcb->netif_idx = netif_get_index(netif);
+  } else {
+    pcb->netif_idx = NETIF_NO_INDEX;
+  }
+}
+
+/**
+ * @ingroup raw_raw
  * Connect an RAW PCB. This function is required by upper layers
  * of lwip. Using the raw api you could use raw_sendto() instead
  *
@@ -256,7 +284,7 @@ raw_connect(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
     ip6_addr_select_zone(ip_2_ip6(&pcb->remote_ip), ip_2_ip6(&pcb->local_ip));
   }
 #endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
-  pcb->flags |= RAW_FLAGS_CONNECTED;
+  raw_set_flags(pcb, RAW_FLAGS_CONNECTED);
   return ERR_OK;
 }
 
@@ -279,8 +307,9 @@ raw_disconnect(struct raw_pcb *pcb)
 #if LWIP_IPV4 && LWIP_IPV6
   }
 #endif
+  pcb->netif_idx = NETIF_NO_INDEX;
   /* mark PCB as unconnected */
-  pcb->flags &= ~RAW_FLAGS_CONNECTED;
+  raw_clear_flags(pcb, RAW_FLAGS_CONNECTED);
 }
 
 /**
@@ -325,22 +354,21 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
 
   LWIP_DEBUGF(RAW_DEBUG | LWIP_DBG_TRACE, ("raw_sendto\n"));
 
+  if (pcb->netif_idx != NETIF_NO_INDEX) {
+    netif = netif_get_by_index(pcb->netif_idx);
+  } else {
 #if LWIP_MULTICAST_TX_OPTIONS
-  netif = NULL;
-  if (ip_addr_ismulticast(ipaddr)) {
-    /* For multicast-destined packets, use the user-provided interface index to
-     * determine the outgoing interface, if an interface index is set and a
-     * matching netif can be found. Otherwise, fall back to regular routing. */
-    netif = netif_get_by_index(pcb->mcast_ifindex);
-  }
+    netif = NULL;
+    if (ip_addr_ismulticast(ipaddr)) {
+      /* For multicast-destined packets, use the user-provided interface index to
+       * determine the outgoing interface, if an interface index is set and a
+       * matching netif can be found. Otherwise, fall back to regular routing. */
+      netif = netif_get_by_index(pcb->mcast_ifindex);
+    }
 
-  if (netif == NULL)
+    if (netif == NULL)
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
-  {
-    if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
-      /* Don't call ip_route() with IP_ANY_TYPE */
-      netif = ip_route(IP46_ADDR_ANY(IP_GET_TYPE(ipaddr)), ipaddr);
-    } else {
+    {
       netif = ip_route(&pcb->local_ip, ipaddr);
     }
   }
@@ -412,9 +440,9 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
       return ERR_VAL;
     }
     /* @todo multicast loop support, if at all desired for this scenario.. */
-    NETIF_SET_HWADDRHINT(netif, &pcb->addr_hint);
+    NETIF_SET_HINTS(netif, &pcb->netif_hints);
     err = ip_output_if_hdrincl(p, src_ip, dst_ip, netif);
-    NETIF_SET_HWADDRHINT(netif, NULL);
+    NETIF_RESET_HINTS(netif);
     return err;
   }
 
@@ -440,7 +468,7 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   } else {
     /* first pbuf q equals given pbuf */
     q = p;
-    if (pbuf_header(q, -header_size)) {
+    if (pbuf_header(q, (s16_t)-header_size)) {
       LWIP_ASSERT("Can't restore header we just removed!", 0);
       return ERR_MEM;
     }
@@ -485,9 +513,9 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   ttl = pcb->ttl;
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
 
-  NETIF_SET_HWADDRHINT(netif, &pcb->addr_hint);
+  NETIF_SET_HINTS(netif, &pcb->netif_hints);
   err = ip_output_if(q, src_ip, dst_ip, ttl, pcb->tos, pcb->protocol, netif);
-  NETIF_SET_HWADDRHINT(netif, NULL);
+  NETIF_RESET_HINTS(netif);
 
   /* did we chain a header earlier? */
   if (q != p) {

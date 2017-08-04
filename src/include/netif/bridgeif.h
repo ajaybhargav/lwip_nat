@@ -58,20 +58,34 @@ typedef u64_t bridgeif_portmask_t;
 
 #define BR_FLOOD ((bridgeif_portmask_t)-1)
 
-
+/** @ingroup bridgeif
+ * Initialisation data for @ref bridgeif_init.
+ * An instance of this type must be passed as parameter 'state' to @ref netif_add
+ * when the bridge is added.
+ */
 typedef struct bridgeif_initdata_s {
+  /** MAC address of the bridge (cannot use the netif's addresses) */
   struct eth_addr ethaddr;
+  /** Maximum number of ports in the bridge (ports are stored in an array, this
+      influences memory allocated for netif->state of the bridge netif). */
   u8_t            max_ports;
+  /** Maximum number of dynamic/learning entries in the bridge's forwarding database.
+      In the default implementation, this controls memory consumption only. */
   u16_t           max_fdb_dynamic_entries;
+  /** Maximum number of static forwarding entries. Influences memory consumption! */
   u16_t           max_fdb_static_entries;
 } bridgeif_initdata_t;
 
-/* Use this for constant initialization of a bridgeif_initdat_t
-   (ethaddr must be passed as pointer)*/
+/** @ingroup bridgeif
+ * Use this for constant initialization of a bridgeif_initdat_t
+ * (ethaddr must be passed as ETH_ADDR())
+ */
 #define BRIDGEIF_INITDATA1(max_ports, max_fdb_dynamic_entries, max_fdb_static_entries, ethaddr) {ethaddr, max_ports, max_fdb_dynamic_entries, max_fdb_static_entries}
-/* Use this for constant initialization of a bridgeif_initdat_t
-   (each byte of ethaddr must be passed)*/
-#define BRIDGEIF_INITDATA2(max_ports, max_fdb_dynamic_entries, max_fdb_static_entries, e0, e1, e2, e3, e4, e5) {max_ports, max_fdb_dynamic_entries, max_fdb_static_entries, {{e0, e1, e2, e3, e4, e5}}
+/** @ingroup bridgeif
+ * Use this for constant initialization of a bridgeif_initdat_t
+ * (each byte of ethaddr must be passed)
+ */
+#define BRIDGEIF_INITDATA2(max_ports, max_fdb_dynamic_entries, max_fdb_static_entries, e0, e1, e2, e3, e4, e5) {{e0, e1, e2, e3, e4, e5}, max_ports, max_fdb_dynamic_entries, max_fdb_static_entries}
 
 err_t bridgeif_init(struct netif *netif);
 err_t bridgeif_add_port(struct netif *bridgeif, struct netif *portif);

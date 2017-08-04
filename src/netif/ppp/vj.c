@@ -202,13 +202,8 @@ vj_compress_tcp(struct vjcompress *comp, struct pbuf **pb)
 
   /* TCP stack requires that we don't change the packet payload, therefore we copy
    * the whole packet before compression. */
-  np = pbuf_alloc(PBUF_RAW, np->tot_len, PBUF_POOL);
+  np = pbuf_clone(PBUF_RAW, PBUF_POOL, *pb);
   if (!np) {
-    return (TYPE_IP);
-  }
-
-  if (pbuf_copy(np, *pb) != ERR_OK) {
-    pbuf_free(np);
     return (TYPE_IP);
   }
 
@@ -471,13 +466,12 @@ vj_uncompress_uncomp(struct pbuf *nb, struct vjcompress *comp)
   hlen = IPH_HL(ip) << 2;
   if (IPH_PROTO(ip) >= MAX_SLOTS
       || hlen + sizeof(struct tcp_hdr) > nb->len
-      || (hlen += TCPH_HDRLEN(((struct tcp_hdr *)&((char *)ip)[hlen])) << 2)
+      || (hlen += TCPH_HDRLEN_BYTES((struct tcp_hdr *)&((char *)ip)[hlen]))
           > nb->len
       || hlen > MAX_HDR) {
     PPPDEBUG(LOG_INFO, ("vj_uncompress_uncomp: bad cid=%d, hlen=%d buflen=%d\n",
       IPH_PROTO(ip), hlen, nb->len));
-    comp->flags |= VJF_TOSS;
-    INCR(vjs_errorin);
+    vj_uncompress_err(comp);
     return -1;
   }
   cs = &comp->rstate[comp->last_recv = IPH_PROTO(ip)];
@@ -632,8 +626,7 @@ vj_uncompress_tcp(struct pbuf **nb, struct vjcompress *comp)
   }
 
   if(LWIP_MEM_ALIGN(n0->payload) != n0->payload) {
-    struct pbuf *np, *q;
-    u8_t *bufptr;
+    struct pbuf *np;
 
 #if IP_FORWARD
     /* If IP forwarding is enabled we are using a PBUF_LINK packet type so
@@ -655,11 +648,7 @@ vj_uncompress_tcp(struct pbuf **nb, struct vjcompress *comp)
       goto bad;
     }
 
-    bufptr = (u8_t*)n0->payload;
-    for(q = np; q != NULL; q = q->next) {
-      MEMCPY(q->payload, bufptr, q->len);
-      bufptr += q->len;
-    }
+    pbuf_take(np, n0->payload, n0->len);
 
     if(n0->next) {
       pbuf_chain(np, n0->next);
@@ -689,8 +678,7 @@ vj_uncompress_tcp(struct pbuf **nb, struct vjcompress *comp)
   return vjlen;
 
 bad:
-  comp->flags |= VJF_TOSS;
-  INCR(vjs_errorin);
+  vj_uncompress_err(comp);
   return (-1);
 }
 

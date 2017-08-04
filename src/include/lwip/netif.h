@@ -225,6 +225,15 @@ u8_t netif_alloc_client_data_id(void);
 #define netif_get_client_data(netif, id)       (netif)->client_data[(id)]
 #endif
 
+#if LWIP_NETIF_HWADDRHINT
+#define LWIP_NETIF_USE_HINTS              1
+struct netif_hint {
+  u8_t addr_hint;
+};
+#else /* LWIP_NETIF_HWADDRHINT */
+#define LWIP_NETIF_USE_HINTS              0
+#endif /* LWIP_NETIF_HWADDRHINT */
+
 /** Generic data structure used for all lwIP network interfaces.
  *  The following fields should be filled in by the initialization
  *  function for the device driver: hwaddr_len, hwaddr[], mtu, flags */
@@ -305,8 +314,6 @@ struct netif {
   /** maximum transfer unit (in bytes) */
   u16_t mtu;
   /** link level hardware address of this interface */
-  /* Ensure hwaddr is 16-bit aligned by placing it behind u16_t value
-   * because it is accessed via ETHADDR16_COPY() macro in etharp.c and autoip.c */
   u8_t hwaddr[NETIF_MAX_HWADDR_LEN];
   /** number of bytes used in hwaddr */
   u8_t hwaddr_len;
@@ -345,9 +352,9 @@ struct netif {
       filter table of the ethernet MAC. */
   netif_mld_mac_filter_fn mld_mac_filter;
 #endif /* LWIP_IPV6 && LWIP_IPV6_MLD */
-#if LWIP_NETIF_HWADDRHINT
-  u8_t *addr_hint;
-#endif /* LWIP_NETIF_HWADDRHINT */
+#if LWIP_NETIF_USE_HINTS
+  struct netif_hint *hints;
+#endif /* LWIP_NETIF_USE_HINTS */
 #if ENABLE_LOOPBACK
   /* List of packets to be queued for ourselves. */
   struct pbuf *loop_first;
@@ -379,14 +386,16 @@ extern struct netif *netif_default;
 
 void netif_init(void);
 
+struct netif *netif_add_noaddr(struct netif *netif, void *state, netif_init_fn init, netif_input_fn input);
+
+#if LWIP_IPV4
 struct netif *netif_add(struct netif *netif,
-#if LWIP_IPV4
-                        const ip4_addr_t *ipaddr, const ip4_addr_t *netmask, const ip4_addr_t *gw,
-#endif /* LWIP_IPV4 */
-                        void *state, netif_init_fn init, netif_input_fn input);
-#if LWIP_IPV4
+                            const ip4_addr_t *ipaddr, const ip4_addr_t *netmask, const ip4_addr_t *gw,
+                            void *state, netif_init_fn init, netif_input_fn input);
 void netif_set_addr(struct netif *netif, const ip4_addr_t *ipaddr, const ip4_addr_t *netmask,
                     const ip4_addr_t *gw);
+#else /* LWIP_IPV4 */
+struct netif *netif_add(struct netif *netif, void *state, netif_init_fn init, netif_input_fn input);
 #endif /* LWIP_IPV4 */
 void netif_remove(struct netif * netif);
 
@@ -415,6 +424,10 @@ void netif_set_gw(struct netif *netif, const ip4_addr_t *gw);
 /** @ingroup netif_ip4 */
 #define netif_ip_gw4(netif)      ((const ip_addr_t*)&((netif)->gw))
 #endif /* LWIP_IPV4 */
+
+#define netif_set_flags(netif, set_flags)     do { (netif)->flags = (u8_t)((netif)->flags |  (set_flags)); } while(0)
+#define netif_clear_flags(netif, clr_flags)   do { (netif)->flags = (u8_t)((netif)->flags & ~(clr_flags)); } while(0)
+#define netif_is_flag_set(nefif, flag)        (((netif)->flags & (flag)) != 0)
 
 void netif_set_up(struct netif *netif);
 void netif_set_down(struct netif *netif);
@@ -498,18 +511,20 @@ err_t netif_add_ip6_address(struct netif *netif, const ip6_addr_t *ip6addr, s8_t
 #endif /* !LWIP_IPV6_ADDRESS_LIFETIMES */
 #endif /* LWIP_IPV6 */
 
-#if LWIP_NETIF_HWADDRHINT
-#define NETIF_SET_HWADDRHINT(netif, hint) ((netif)->addr_hint = (hint))
-#else /* LWIP_NETIF_HWADDRHINT */
-#define NETIF_SET_HWADDRHINT(netif, hint)
-#endif /* LWIP_NETIF_HWADDRHINT */
+#if LWIP_NETIF_USE_HINTS
+#define NETIF_SET_HINTS(netif, netifhint)  (netif)->hints = (netifhint)
+#define NETIF_RESET_HINTS(netif)      (netif)->hints = NULL
+#else /* LWIP_NETIF_USE_HINTS */
+#define NETIF_SET_HINTS(netif, netifhint)
+#define NETIF_RESET_HINTS(netif)
+#endif /* LWIP_NETIF_USE_HINTS */
 
 u8_t netif_name_to_index(const char *name);
 char * netif_index_to_name(u8_t idx, char *name);
 struct netif* netif_get_by_index(u8_t idx);
 
-/* Interface indexes always start at 1 per RFC 3493, section 4, num starts at 0 */
-#define netif_get_index(netif)      ((netif)->num + 1)
+/* Interface indexes always start at 1 per RFC 3493, section 4, num starts at 0 (internal index is 0..254)*/
+#define netif_get_index(netif)      ((u8_t)((netif)->num + 1))
 #define NETIF_NO_INDEX              (0)
 
 /**

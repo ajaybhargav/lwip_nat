@@ -101,6 +101,9 @@
 #if HTTPD_ENABLE_HTTPS
 #include "lwip/altcp_tls.h"
 #endif
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
 
 #include <string.h> /* memset */
 #include <stdlib.h> /* atoi */
@@ -117,26 +120,21 @@
 #define HTTP11_CONNECTIONKEEPALIVE2 "Connection: Keep-Alive"
 #endif
 
-/** These defines check whether tcp_write has to copy data or not */
-
-/** This was TI's check whether to let TCP copy data or not
- * \#define HTTP_IS_DATA_VOLATILE(hs) ((hs->file < (char *)0x20000000) ? 0 : TCP_WRITE_FLAG_COPY)
- */
-#ifndef HTTP_IS_DATA_VOLATILE
-#if LWIP_HTTPD_SSI
-/* Copy for SSI files, no copy for non-SSI files */
-#define HTTP_IS_DATA_VOLATILE(hs)   ((hs)->ssi ? TCP_WRITE_FLAG_COPY : 0)
-#else /* LWIP_HTTPD_SSI */
-/** Default: don't copy if the data is sent from file-system directly */
-#define HTTP_IS_DATA_VOLATILE(hs) (((hs->file != NULL) && (hs->handle != NULL) && (hs->file == \
-                                   (const char*)hs->handle->data + hs->handle->len - hs->left)) \
-                                   ? 0 : TCP_WRITE_FLAG_COPY)
-#endif /* LWIP_HTTPD_SSI */
+#if LWIP_HTTPD_DYNAMIC_FILE_READ
+#define HTTP_IS_DYNAMIC_FILE(hs) ((hs)->buf != NULL)
+#else
+#define HTTP_IS_DYNAMIC_FILE(hs) 0
 #endif
 
-/** Default: headers are sent from ROM */
+/* This defines checks whether tcp_write has to copy data or not */
+
+#ifndef HTTP_IS_DATA_VOLATILE
+/** tcp_write does not have to copy data when sent from rom-file-system directly */
+#define HTTP_IS_DATA_VOLATILE(hs)       (HTTP_IS_DYNAMIC_FILE(hs) ? TCP_WRITE_FLAG_COPY : 0)
+#endif
+/** Default: dynamic headers are sent from ROM (non-dynamic headers are handled like file data) */
 #ifndef HTTP_IS_HDR_VOLATILE
-#define HTTP_IS_HDR_VOLATILE(hs, ptr) 0
+#define HTTP_IS_HDR_VOLATILE(hs, ptr)   0
 #endif
 
 /* Return values for http_send_*() */
@@ -542,7 +540,7 @@ http_write(struct altcp_pcb *pcb, const void* ptr, u16_t *length, u8_t apiflags)
   }
 #endif /* HTTPD_MAX_WRITE_LEN */
   do {
-    LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("Trying go send %d bytes\n", len));
+    LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("Trying to send %d bytes\n", len));
     err = altcp_write(pcb, ptr, len, apiflags);
     if (err == ERR_MEM) {
       if ((altcp_sndbuf(pcb) == 0) ||
@@ -946,7 +944,7 @@ get_http_headers(struct http_state *hs, const char *uri)
       hs->handle->len);
     len = strlen(hs->hdr_content_len);
     if (len <= LWIP_HTTPD_MAX_CONTENT_LEN_SIZE - LWIP_HTTPD_MAX_CONTENT_LEN_OFFSET) {
-      SMEMCPY(&hs->hdr_content_len[len], CRLF "\0", 3);
+      SMEMCPY(&hs->hdr_content_len[len], CRLF, 3);
       hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_NR] = hs->hdr_content_len;
     } else {
       add_content_len = 0;
@@ -1226,7 +1224,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
 
   /* We have sent all the data that was already parsed so continue parsing
    * the buffer contents looking for SSI tags. */
-  while((ssi->parse_left) && (err == ERR_OK)) {
+  while(((ssi->tag_state == TAG_SENDING) || ssi->parse_left) && (err == ERR_OK)) {
     if (len == 0) {
       return data_to_send;
     }
@@ -1493,7 +1491,19 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
    * file data to send so send it now. In TAG_SENDING state, we've already
    * handled this so skip the send if that's the case. */
   if((ssi->tag_state != TAG_SENDING) && (ssi->parsed > hs->file)) {
-    len = (u16_t)LWIP_MIN(ssi->parsed - hs->file, 0xffff);
+#if LWIP_HTTPD_DYNAMIC_FILE_READ && !LWIP_HTTPD_SSI_INCLUDE_TAG
+    if ((ssi->tag_state != TAG_NONE) && (ssi->tag_started > ssi->tag_end)) {
+      /* If we found tag on the edge of the read buffer: just throw away the first part
+         (we have copied/saved everything required for parsing on later). */
+      len = (u16_t)(ssi->tag_started - hs->file);
+      hs->left -= (ssi->parsed - ssi->tag_started);
+      ssi->parsed = ssi->tag_started;
+      ssi->tag_started = hs->buf;
+    } else
+#endif /* LWIP_HTTPD_DYNAMIC_FILE_READ && !LWIP_HTTPD_SSI_INCLUDE_TAG */
+    {
+      len = (u16_t)LWIP_MIN(ssi->parsed - hs->file, 0xffff);
+    }
 
     err = http_write(pcb, hs->file, &len, HTTP_IS_DATA_VOLATILE(hs));
     if (err == ERR_OK) {
@@ -2259,7 +2269,7 @@ http_init_file(struct http_state *hs, struct fs_file *file, int is_09, const cha
     } else
 #endif /* LWIP_HTTPD_CUSTOM_FILES */
     {
-      hs->left = file->len;
+      hs->left = (u32_t)file->len;
     }
     hs->retries = 0;
 #if LWIP_HTTPD_TIMING
@@ -2275,7 +2285,7 @@ http_init_file(struct http_state *hs, struct fs_file *file, int is_09, const cha
          search for the end of the header. */
       char *file_start = lwip_strnstr(hs->file, CRLF CRLF, hs->left);
       if (file_start != NULL) {
-        size_t diff = file_start + 4 - hs->file;
+        int diff = file_start + 4 - hs->file;
         hs->file += diff;
         hs->left -= (u32_t)diff;
       }

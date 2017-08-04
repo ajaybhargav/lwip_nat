@@ -94,6 +94,19 @@
 /* Forward declarations.*/
 static err_t tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif);
 
+/* tcp_route: common code that returns a fixed bound netif or calls ip_route */
+static struct netif *
+tcp_route(const struct tcp_pcb *pcb, const ip_addr_t *src, const ip_addr_t *dst)
+{
+  LWIP_UNUSED_ARG(src); /* in case IPv4-only and source-based routing is disabled */
+
+  if ((pcb != NULL) && (pcb->netif_idx != NETIF_NO_INDEX)) {
+    return netif_get_by_index(pcb->netif_idx);
+  } else {
+    return ip_route(src, dst);
+  }
+}
+
 /** Allocate a pbuf and create a tcphdr at p->payload, used for output
  * functions other than the default tcp_output -> tcp_output_segment
  * (e.g. tcp_send_empty_ack, etc.)
@@ -481,6 +494,7 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
     LWIP_ASSERT("inconsistent oversize vs. len", (oversize == 0) || (pos == len));
 #endif /* TCP_OVERSIZE */
 
+#if !LWIP_NETIF_TX_SINGLE_PBUF
     /*
      * Phase 2: Chain a new pbuf to the end of pcb->unsent.
      *
@@ -491,6 +505,10 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
      * We don't extend segments containing SYN/FIN flags or options
      * (len==0). The new pbuf is kept in concat_p and pbuf_cat'ed at
      * the end.
+     *
+     * This phase is skipped for LWIP_NETIF_TX_SINGLE_PBUF as we could only execute
+     * it after rexmit puts a segment from unacked to unsent and at this point,
+     * oversize info is lost.
      */
     if ((pos < len) && (space > 0) && (last_unsent->len > 0)) {
       u16_t seglen = LWIP_MIN(space, len - pos);
@@ -520,7 +538,8 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
         /* If the last unsent pbuf is of type PBUF_ROM, try to extend it. */
         struct pbuf *p;
         for (p = last_unsent->p; p->next != NULL; p = p->next);
-        if (p->type == PBUF_ROM && (const u8_t *)p->payload + p->len == (const u8_t *)arg) {
+        if (((p->type_internal & (PBUF_TYPE_FLAG_STRUCT_DATA_CONTIGUOUS|PBUF_TYPE_FLAG_DATA_VOLATILE)) == 0) &&
+            (const u8_t *)p->payload + p->len == (const u8_t *)arg) {
           LWIP_ASSERT("tcp_write: ROM pbufs cannot be oversized", pos == 0);
           extendlen = seglen;
         } else {
@@ -543,6 +562,7 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
 
       pos += seglen;
     }
+#endif /* !LWIP_NETIF_TX_SINGLE_PBUF */
   } else {
 #if TCP_OVERSIZE
     LWIP_ASSERT("unsent_oversize mismatch (pcb->unsent is NULL)",
@@ -813,11 +833,18 @@ tcp_enqueue_flags(struct tcp_pcb *pcb, u8_t flags)
       optflags |= TF_SEG_OPTS_WND_SCALE;
     }
 #endif /* LWIP_WND_SCALE */
+#if LWIP_TCP_SACK_OUT
+    if ((pcb->state != SYN_RCVD) || (pcb->flags & TF_SACK)) {
+      /* In a <SYN,ACK> (sent in state SYN_RCVD), the SACK_PERM option may only
+         be sent if we received a SACK_PERM option from the remote host. */
+      optflags |= TF_SEG_OPTS_SACK_PERM;
+    }
+#endif /* LWIP_TCP_SACK_OUT */
   }
 #if LWIP_TCP_TIMESTAMPS
-  if ((pcb->flags & TF_TIMESTAMP)) {
+  if ((pcb->flags & TF_TIMESTAMP) || ((flags & TCP_SYN) && (pcb->state != SYN_RCVD))) {
     /* Make sure the timestamp option is only included in data segments if we
-       agreed about it with the remote host. */
+       agreed about it with the remote host (and in active open SYN segments). */
     optflags |= TF_SEG_OPTS_TS;
   }
 #endif /* LWIP_TCP_TIMESTAMPS */
@@ -896,6 +923,63 @@ tcp_build_timestamp_option(struct tcp_pcb *pcb, u32_t *opts)
 }
 #endif
 
+#if LWIP_TCP_SACK_OUT
+/**
+ * Calculates the number of SACK entries that should be generated.
+ * It takes into account whether TF_SACK flag is set,
+ * the number of SACK entries in tcp_pcb that are valid,
+ * as well as the available options size.
+ *
+ * @param pcb tcp_pcb
+ * @param optlen the length of other TCP options (in bytes)
+ * @return the number of SACK ranges that can be used
+ */
+static u8_t
+tcp_get_num_sacks(struct tcp_pcb *pcb, u8_t optlen)
+{
+  u8_t num_sacks = 0;
+
+  if (pcb->flags & TF_SACK) {
+    u8_t i;
+
+    /* The first SACK takes up 12 bytes (it includes SACK header and two NOP options),
+       each additional one - 8 bytes. */
+    optlen += 12;
+
+    /* Max options size = 40, number of SACK array entries = LWIP_TCP_MAX_SACK_NUM */
+    for (i = 0; (i < LWIP_TCP_MAX_SACK_NUM) && (optlen <= 40) && LWIP_TCP_SACK_VALID(pcb, i); ++i) {
+      ++num_sacks;
+      optlen += 8;
+    }
+  }
+
+  return num_sacks;
+}
+
+/** Build a SACK option (12 or more bytes long) at the specified options pointer)
+ *
+ * @param pcb tcp_pcb
+ * @param opts option pointer where to store the SACK option
+ * @param num_sacks the number of SACKs to store
+ */
+static void
+tcp_build_sack_option(struct tcp_pcb *pcb, u32_t *opts, u8_t num_sacks)
+{
+  u8_t i;
+
+  /* Pad with two NOP options to make everything nicely aligned.
+     We add the length (of just the SACK option, not the NOPs in front of it),
+     which is 2B of header, plus 8B for each SACK. */
+  *(opts++) = PP_HTONL(0x01010500 + 2 + num_sacks * 8);
+
+  for (i = 0; i < num_sacks; ++i) {
+    *(opts++) = lwip_htonl(pcb->rcv_sacks[i].left);
+    *(opts++) = lwip_htonl(pcb->rcv_sacks[i].right);
+  }
+}
+
+#endif
+
 #if LWIP_WND_SCALE
 /** Build a window scale option (3 bytes long) at the specified options pointer)
  *
@@ -921,13 +1005,25 @@ tcp_send_empty_ack(struct tcp_pcb *pcb)
   struct pbuf *p;
   u8_t optlen = 0;
   struct netif *netif;
-#if LWIP_TCP_TIMESTAMPS || CHECKSUM_GEN_TCP
+#if CHECKSUM_GEN_TCP || LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT
   struct tcp_hdr *tcphdr;
-#endif /* LWIP_TCP_TIMESTAMPS || CHECKSUM_GEN_TCP */
+#if LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT
+  u32_t *opts;
+#if LWIP_TCP_SACK_OUT
+  u8_t num_sacks;
+#endif /* LWIP_TCP_SACK_OUT */
+#endif /* LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT */
+#endif /* CHECKSUM_GEN_TCP || LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT */
 
 #if LWIP_TCP_TIMESTAMPS
   if (pcb->flags & TF_TIMESTAMP) {
     optlen = LWIP_TCP_OPT_LENGTH(TF_SEG_OPTS_TS);
+  }
+#endif
+
+#if LWIP_TCP_SACK_OUT
+  if ((num_sacks = tcp_get_num_sacks(pcb, optlen)) > 0) {
+    optlen += 4 + num_sacks * 8; /* 4 bytes for header (including 2*NOP), plus 8B for each SACK */
   }
 #endif
 
@@ -938,9 +1034,15 @@ tcp_send_empty_ack(struct tcp_pcb *pcb)
     LWIP_DEBUGF(TCP_OUTPUT_DEBUG, ("tcp_output: (ACK) could not allocate pbuf\n"));
     return ERR_BUF;
   }
-#if LWIP_TCP_TIMESTAMPS || CHECKSUM_GEN_TCP
+
+#if CHECKSUM_GEN_TCP || LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT
   tcphdr = (struct tcp_hdr *)p->payload;
-#endif /* LWIP_TCP_TIMESTAMPS || CHECKSUM_GEN_TCP */
+#if LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT
+  /* cast through void* to get rid of alignment warnings */
+  opts = (u32_t *)(void *)(tcphdr + 1);
+#endif /* LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT */
+#endif /* CHECKSUM_GEN_TCP || LWIP_TCP_TIMESTAMPS || LWIP_TCP_SACK_OUT */
+
   LWIP_DEBUGF(TCP_OUTPUT_DEBUG,
               ("tcp_output: sending ACK for %"U32_F"\n", pcb->rcv_nxt));
 
@@ -949,11 +1051,20 @@ tcp_send_empty_ack(struct tcp_pcb *pcb)
   pcb->ts_lastacksent = pcb->rcv_nxt;
 
   if (pcb->flags & TF_TIMESTAMP) {
-    tcp_build_timestamp_option(pcb, (u32_t *)(tcphdr + 1));
+    tcp_build_timestamp_option(pcb, opts);
+    opts += 3;
   }
 #endif
 
-  netif = ip_route(&pcb->local_ip, &pcb->remote_ip);
+#if LWIP_TCP_SACK_OUT
+  if (num_sacks > 0) {
+    tcp_build_sack_option(pcb, opts, num_sacks);
+    /* 1 word for SACKs header (including 2xNOP), and 2 words for each SACK */
+    opts += 1 + num_sacks * 2;
+  }
+#endif
+
+  netif = tcp_route(pcb, &pcb->local_ip, &pcb->remote_ip);
   if (netif == NULL) {
     err = ERR_RTE;
   } else {
@@ -963,10 +1074,10 @@ tcp_send_empty_ack(struct tcp_pcb *pcb)
         &pcb->local_ip, &pcb->remote_ip);
     }
 #endif
-    NETIF_SET_HWADDRHINT(netif, &(pcb->addr_hint));
+    NETIF_SET_HINTS(netif, &(pcb->netif_hints));
     err = ip_output_if(p, &pcb->local_ip, &pcb->remote_ip,
       pcb->ttl, pcb->tos, IP_PROTO_TCP, netif);
-    NETIF_SET_HWADDRHINT(netif, NULL);
+    NETIF_RESET_HINTS(netif);
   }
   pbuf_free(p);
 
@@ -975,7 +1086,7 @@ tcp_send_empty_ack(struct tcp_pcb *pcb)
     pcb->flags |= (TF_ACK_DELAY | TF_ACK_NOW);
   } else {
     /* remove ACK flags from the PCB, as we sent an empty ACK now */
-    pcb->flags &= ~(TF_ACK_DELAY | TF_ACK_NOW);
+    tcp_clear_flags(pcb, TF_ACK_DELAY | TF_ACK_NOW);
   }
 
   return err;
@@ -1028,13 +1139,31 @@ tcp_output(struct tcp_pcb *pcb)
      return tcp_send_empty_ack(pcb);
   }
 
+  if (seg == NULL) {
+    LWIP_DEBUGF(TCP_OUTPUT_DEBUG, ("tcp_output: nothing to send (%p)\n",
+                                   (void*)pcb->unsent));
+    LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_output: snd_wnd %"TCPWNDSIZE_F
+                                 ", cwnd %"TCPWNDSIZE_F", wnd %"U32_F
+                                 ", seg == NULL, ack %"U32_F"\n",
+                                 pcb->snd_wnd, pcb->cwnd, wnd, pcb->lastack));
+    /* nothing to send: shortcut out of here */
+    goto output_done;
+  } else {
+    LWIP_DEBUGF(TCP_CWND_DEBUG,
+                ("tcp_output: snd_wnd %"TCPWNDSIZE_F", cwnd %"TCPWNDSIZE_F", wnd %"U32_F
+                 ", effwnd %"U32_F", seq %"U32_F", ack %"U32_F"\n",
+                 pcb->snd_wnd, pcb->cwnd, wnd,
+                 lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len,
+                 lwip_ntohl(seg->tcphdr->seqno), pcb->lastack));
+  }
+
   /* useg should point to last segment on unacked queue */
   useg = pcb->unacked;
   if (useg != NULL) {
     for (; useg->next != NULL; useg = useg->next);
   }
 
-  netif = ip_route(&pcb->local_ip, &pcb->remote_ip);
+  netif = tcp_route(pcb, &pcb->local_ip, &pcb->remote_ip);
   if (netif == NULL) {
     return ERR_RTE;
   }
@@ -1048,27 +1177,6 @@ tcp_output(struct tcp_pcb *pcb)
     ip_addr_copy(pcb->local_ip, *local_ip);
   }
 
-#if TCP_OUTPUT_DEBUG
-  if (seg == NULL) {
-    LWIP_DEBUGF(TCP_OUTPUT_DEBUG, ("tcp_output: nothing to send (%p)\n",
-                                   (void*)pcb->unsent));
-  }
-#endif /* TCP_OUTPUT_DEBUG */
-#if TCP_CWND_DEBUG
-  if (seg == NULL) {
-    LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_output: snd_wnd %"TCPWNDSIZE_F
-                                 ", cwnd %"TCPWNDSIZE_F", wnd %"U32_F
-                                 ", seg == NULL, ack %"U32_F"\n",
-                                 pcb->snd_wnd, pcb->cwnd, wnd, pcb->lastack));
-  } else {
-    LWIP_DEBUGF(TCP_CWND_DEBUG,
-                ("tcp_output: snd_wnd %"TCPWNDSIZE_F", cwnd %"TCPWNDSIZE_F", wnd %"U32_F
-                 ", effwnd %"U32_F", seq %"U32_F", ack %"U32_F"\n",
-                 pcb->snd_wnd, pcb->cwnd, wnd,
-                 lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len,
-                 lwip_ntohl(seg->tcphdr->seqno), pcb->lastack));
-  }
-#endif /* TCP_CWND_DEBUG */
   /* Check if we need to start the persistent timer when the next unsent segment
    * does not fit within the remaining send window and RTO timer is not running (we
    * have no in-flight data). A traditional approach would fill the remaining window
@@ -1077,13 +1185,13 @@ tcp_output(struct tcp_pcb *pcb)
    * subsequent window update is reliably received. With the goal of being lightweight,
    * we avoid splitting the unsent segment and treat the window as already zero.
    */
-  if (seg != NULL &&
-      lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len > wnd &&
+  if (lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len > wnd &&
       wnd > 0 && wnd == pcb->snd_wnd && pcb->unacked == NULL) {
     /* Start the persist timer */
     if (pcb->persist_backoff == 0) {
       pcb->persist_cnt = 0;
       pcb->persist_backoff = 1;
+      pcb->persist_probe = 0;
     }
     goto output_done;
   }
@@ -1127,7 +1235,7 @@ tcp_output(struct tcp_pcb *pcb)
     }
     pcb->unsent = seg->next;
     if (pcb->state != SYN_SENT) {
-      pcb->flags &= ~(TF_ACK_DELAY | TF_ACK_NOW);
+      tcp_clear_flags(pcb, TF_ACK_DELAY | TF_ACK_NOW);
     }
     snd_nxt = lwip_ntohl(seg->tcphdr->seqno) + TCP_TCPLEN(seg);
     if (TCP_SEQ_LT(pcb->snd_nxt, snd_nxt)) {
@@ -1166,7 +1274,6 @@ tcp_output(struct tcp_pcb *pcb)
     }
     seg = pcb->unsent;
   }
-output_done:
 #if TCP_OVERSIZE
   if (pcb->unsent == NULL) {
     /* last unsent has been removed, reset unsent_oversize */
@@ -1174,7 +1281,8 @@ output_done:
   }
 #endif /* TCP_OVERSIZE */
 
-  pcb->flags &= ~TF_NAGLEMEMERR;
+output_done:
+  tcp_clear_flags(pcb, TF_NAGLEMEMERR);
   return ERR_OK;
 }
 
@@ -1245,6 +1353,16 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
     opts += 1;
   }
 #endif
+#if LWIP_TCP_SACK_OUT
+  if (seg->flags & TF_SEG_OPTS_SACK_PERM) {
+    /* Pad with two NOP options to make everything nicely aligned
+     * NOTE: When we send both timestamp and SACK_PERM options,
+     * we could use the first two NOPs before the timestamp to store SACK_PERM option,
+     * but that would complicate the code.
+     */
+    *(opts++) = PP_HTONL(0x01010402);
+  }
+#endif
 
   /* Set retransmission timer running if it is not currently enabled
      This must be set before checking the route. */
@@ -1284,12 +1402,12 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
 #endif /* TCP_CHECKSUM_ON_COPY_SANITY_CHECK */
     if ((seg->flags & TF_SEG_DATA_CHECKSUMMED) == 0) {
       LWIP_ASSERT("data included but not checksummed",
-        seg->p->tot_len == (TCPH_HDRLEN(seg->tcphdr) * 4));
+        seg->p->tot_len == TCPH_HDRLEN_BYTES(seg->tcphdr));
     }
 
     /* rebuild TCP header checksum (TCP header changes for retransmissions!) */
     acc = ip_chksum_pseudo_partial(seg->p, IP_PROTO_TCP,
-      seg->p->tot_len, TCPH_HDRLEN(seg->tcphdr) * 4, &pcb->local_ip, &pcb->remote_ip);
+      seg->p->tot_len, TCPH_HDRLEN_BYTES(seg->tcphdr), &pcb->local_ip, &pcb->remote_ip);
     /* add payload checksum */
     if (seg->chksum_swapped) {
       seg->chksum = SWAP_BYTES_IN_WORD(seg->chksum);
@@ -1313,10 +1431,10 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
 #endif /* CHECKSUM_GEN_TCP */
   TCP_STATS_INC(tcp.xmit);
 
-  NETIF_SET_HWADDRHINT(netif, &(pcb->addr_hint));
+  NETIF_SET_HINTS(netif, &(pcb->netif_hints));
   err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
     pcb->tos, IP_PROTO_TCP, netif);
-  NETIF_SET_HWADDRHINT(netif, NULL);
+  NETIF_RESET_HINTS(netif);
   return err;
 }
 
@@ -1333,6 +1451,7 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
  * tcp_rst() has a number of arguments that are taken from a tcp_pcb for
  * most other segment output functions.
  *
+ * @param pcb TCP pcb
  * @param seqno the sequence number to use for the outgoing segment
  * @param ackno the acknowledge number to use for the outgoing segment
  * @param local_ip the local IP address to send the segment from
@@ -1341,7 +1460,7 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
  * @param remote_port the remote TCP port to send the segment to
  */
 void
-tcp_rst(u32_t seqno, u32_t ackno,
+tcp_rst(const struct tcp_pcb *pcb, u32_t seqno, u32_t ackno,
   const ip_addr_t *local_ip, const ip_addr_t *remote_ip,
   u16_t local_port, u16_t remote_port)
 {
@@ -1373,7 +1492,7 @@ tcp_rst(u32_t seqno, u32_t ackno,
   TCP_STATS_INC(tcp.xmit);
   MIB2_STATS_INC(mib2.tcpoutrsts);
 
-  netif = ip_route(local_ip, remote_ip);
+  netif = tcp_route(pcb, local_ip, remote_ip);
   if (netif != NULL) {
 #if CHECKSUM_GEN_TCP
     IF__NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_TCP) {
@@ -1418,6 +1537,11 @@ tcp_rexmit_rto(struct tcp_pcb *pcb)
   pcb->unsent = pcb->unacked;
   /* unacked queue is now empty */
   pcb->unacked = NULL;
+
+  /* Mark RTO in-progress */
+  pcb->flags |= TF_RTO;
+  /* Record the next byte following retransmit */
+  pcb->rto_end = lwip_ntohl(seg->tcphdr->seqno) + TCP_TCPLEN(seg);
 
   /* increment number of retransmissions */
   if (pcb->nrtx < 0xFF) {
@@ -1536,7 +1660,7 @@ tcp_keepalive(struct tcp_pcb *pcb)
   struct netif *netif;
 
   LWIP_DEBUGF(TCP_DEBUG, ("tcp_keepalive: sending KEEPALIVE probe to "));
-  ip_addr_debug_print(TCP_DEBUG, &pcb->remote_ip);
+  ip_addr_debug_print_val(TCP_DEBUG, pcb->remote_ip);
   LWIP_DEBUGF(TCP_DEBUG, ("\n"));
 
   LWIP_DEBUGF(TCP_DEBUG, ("tcp_keepalive: tcp_ticks %"U32_F"   pcb->tmr %"U32_F" pcb->keep_cnt_sent %"U16_F"\n",
@@ -1548,7 +1672,7 @@ tcp_keepalive(struct tcp_pcb *pcb)
                 ("tcp_keepalive: could not allocate memory for pbuf\n"));
     return ERR_MEM;
   }
-  netif = ip_route(&pcb->local_ip, &pcb->remote_ip);
+  netif = tcp_route(pcb, &pcb->local_ip, &pcb->remote_ip);
   if (netif == NULL) {
     err = ERR_RTE;
   } else {
@@ -1562,9 +1686,9 @@ tcp_keepalive(struct tcp_pcb *pcb)
     TCP_STATS_INC(tcp.xmit);
 
     /* Send output to IP */
-    NETIF_SET_HWADDRHINT(netif, &(pcb->addr_hint));
+    NETIF_SET_HINTS(netif, &(pcb->netif_hints));
     err = ip_output_if(p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl, 0, IP_PROTO_TCP, netif);
-    NETIF_SET_HWADDRHINT(netif, NULL);
+    NETIF_RESET_HINTS(netif);
   }
   pbuf_free(p);
 
@@ -1595,7 +1719,7 @@ tcp_zero_window_probe(struct tcp_pcb *pcb)
   struct netif *netif;
 
   LWIP_DEBUGF(TCP_DEBUG, ("tcp_zero_window_probe: sending ZERO WINDOW probe to "));
-  ip_addr_debug_print(TCP_DEBUG, &pcb->remote_ip);
+  ip_addr_debug_print_val(TCP_DEBUG, pcb->remote_ip);
   LWIP_DEBUGF(TCP_DEBUG, ("\n"));
 
   LWIP_DEBUGF(TCP_DEBUG,
@@ -1611,6 +1735,14 @@ tcp_zero_window_probe(struct tcp_pcb *pcb)
   if (seg == NULL) {
     /* nothing to send, zero window probe not needed */
     return ERR_OK;
+  }
+
+  /* increment probe count. NOTE: we record probe even if it fails
+     to actually transmit due to an error. This ensures memory exhaustion/
+     routing problem doesn't leave a zero-window pcb as an indefinite zombie.
+     RTO mechanism has similar behavior, see pcb->nrtx */
+  if (pcb->persist_probe < 0xFF) {
+    ++pcb->persist_probe;
   }
 
   is_fin = ((TCPH_FLAGS(seg->tcphdr) & TCP_FIN) != 0) && (seg->len == 0);
@@ -1642,7 +1774,7 @@ tcp_zero_window_probe(struct tcp_pcb *pcb)
     pcb->snd_nxt = snd_nxt;
   }
 
-  netif = ip_route(&pcb->local_ip, &pcb->remote_ip);
+  netif = tcp_route(pcb, &pcb->local_ip, &pcb->remote_ip);
   if (netif == NULL) {
     err = ERR_RTE;
   } else {
@@ -1655,10 +1787,10 @@ tcp_zero_window_probe(struct tcp_pcb *pcb)
     TCP_STATS_INC(tcp.xmit);
 
     /* Send output to IP */
-    NETIF_SET_HWADDRHINT(netif, &(pcb->addr_hint));
+    NETIF_SET_HINTS(netif, &(pcb->netif_hints));
     err = ip_output_if(p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
       0, IP_PROTO_TCP, netif);
-    NETIF_SET_HWADDRHINT(netif, NULL);
+    NETIF_RESET_HINTS(netif);
   }
 
   pbuf_free(p);

@@ -94,6 +94,7 @@ struct api_msg {
     struct {
       API_MSG_M_DEF_C(ip_addr_t, ipaddr);
       u16_t port;
+      u8_t if_idx;
     } bc;
     /** used for lwip_netconn_do_getaddr */
     struct {
@@ -120,7 +121,7 @@ struct api_msg {
     } w;
     /** used for lwip_netconn_do_recv */
     struct {
-      u32_t len;
+      size_t len;
     } r;
 #if LWIP_TCP
     /** used for lwip_netconn_do_close (/shutdown) */
@@ -185,13 +186,11 @@ struct dns_api_msg {
 };
 #endif /* LWIP_DNS */
 
-#if LWIP_TCP
-extern u8_t netconn_aborted;
-#endif /* LWIP_TCP */
-
+int lwip_netconn_is_err_msg(void *msg, err_t *err);
 void lwip_netconn_do_newconn         (void *m);
 void lwip_netconn_do_delconn         (void *m);
 void lwip_netconn_do_bind            (void *m);
+void lwip_netconn_do_bind_if         (void *m);
 void lwip_netconn_do_connect         (void *m);
 void lwip_netconn_do_disconnect      (void *m);
 void lwip_netconn_do_listen          (void *m);
@@ -214,6 +213,46 @@ void lwip_netconn_do_gethostbyname(void *arg);
 
 struct netconn* netconn_alloc(enum netconn_type t, netconn_callback callback);
 void netconn_free(struct netconn *conn);
+
+/* netifapi related lwIP internal definitions */
+
+#if LWIP_MPU_COMPATIBLE
+#define NETIFAPI_IPADDR_DEF(type, m)  type m
+#else /* LWIP_MPU_COMPATIBLE */
+#define NETIFAPI_IPADDR_DEF(type, m)  const type * m
+#endif /* LWIP_MPU_COMPATIBLE */
+
+typedef void (*netifapi_void_fn)(struct netif *netif);
+typedef err_t (*netifapi_errt_fn)(struct netif *netif);
+
+struct netifapi_msg {
+  struct tcpip_api_call_data call;
+  struct netif *netif;
+  union {
+    struct {
+#if LWIP_IPV4
+      NETIFAPI_IPADDR_DEF(ip4_addr_t, ipaddr);
+      NETIFAPI_IPADDR_DEF(ip4_addr_t, netmask);
+      NETIFAPI_IPADDR_DEF(ip4_addr_t, gw);
+#endif /* LWIP_IPV4 */
+      void *state;
+      netif_init_fn init;
+      netif_input_fn input;
+    } add;
+    struct {
+      netifapi_void_fn voidfunc;
+      netifapi_errt_fn errtfunc;
+    } common;
+    struct {
+#if LWIP_MPU_COMPATIBLE
+      char name[NETIF_NAMESIZE];
+#else /* LWIP_MPU_COMPATIBLE */
+      char *name;
+#endif /* LWIP_MPU_COMPATIBLE */
+      u8_t index;
+    } ifs;
+  } msg;
+};
 
 #ifdef __cplusplus
 }

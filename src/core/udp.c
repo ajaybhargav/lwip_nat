@@ -70,7 +70,7 @@
    "The Dynamic and/or Private Ports are those from 49152 through 65535" */
 #define UDP_LOCAL_PORT_RANGE_START  0xc000
 #define UDP_LOCAL_PORT_RANGE_END    0xffff
-#define UDP_ENSURE_LOCAL_PORT_RANGE(port) ((u16_t)(((port) & ~UDP_LOCAL_PORT_RANGE_START) + UDP_LOCAL_PORT_RANGE_START))
+#define UDP_ENSURE_LOCAL_PORT_RANGE(port) ((u16_t)(((port) & (u16_t)~UDP_LOCAL_PORT_RANGE_START) + UDP_LOCAL_PORT_RANGE_START))
 #endif
 
 /* last local UDP port */
@@ -132,6 +132,12 @@ udp_input_local_match(struct udp_pcb *pcb, struct netif *inp, u8_t broadcast)
   LWIP_UNUSED_ARG(inp);       /* in IPv6 only case */
   LWIP_UNUSED_ARG(broadcast); /* in IPv6 only case */
 
+  /* check if PCB is bound to specific netif */
+  if ((pcb->netif_idx != NETIF_NO_INDEX) &&
+      (pcb->netif_idx != netif_get_index(ip_data.current_input_netif))) {
+    return 0;
+  }
+    
   /* Dual-stack: PCBs listening to any IP type also listen to any IP address */
   if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
 #if LWIP_IPV4 && IP_SOF_BROADCAST_RECV
@@ -224,9 +230,9 @@ udp_input(struct pbuf *p, struct netif *inp)
 
   /* print the UDP source and destination */
   LWIP_DEBUGF(UDP_DEBUG, ("udp ("));
-  ip_addr_debug_print(UDP_DEBUG, ip_current_dest_addr());
+  ip_addr_debug_print_val(UDP_DEBUG, *ip_current_dest_addr());
   LWIP_DEBUGF(UDP_DEBUG, (", %"U16_F") <-- (", lwip_ntohs(udphdr->dest)));
-  ip_addr_debug_print(UDP_DEBUG, ip_current_src_addr());
+  ip_addr_debug_print_val(UDP_DEBUG, *ip_current_src_addr());
   LWIP_DEBUGF(UDP_DEBUG, (", %"U16_F")\n", lwip_ntohs(udphdr->src)));
 
   pcb = NULL;
@@ -239,9 +245,9 @@ udp_input(struct pbuf *p, struct netif *inp)
   for (pcb = udp_pcbs; pcb != NULL; pcb = pcb->next) {
     /* print the PCB local and remote address */
     LWIP_DEBUGF(UDP_DEBUG, ("pcb ("));
-    ip_addr_debug_print(UDP_DEBUG, &pcb->local_ip);
+    ip_addr_debug_print_val(UDP_DEBUG, pcb->local_ip);
     LWIP_DEBUGF(UDP_DEBUG, (", %"U16_F") <-- (", pcb->local_port));
-    ip_addr_debug_print(UDP_DEBUG, &pcb->remote_ip);
+    ip_addr_debug_print_val(UDP_DEBUG, pcb->remote_ip);
     LWIP_DEBUGF(UDP_DEBUG, (", %"U16_F")\n", pcb->remote_port));
 
     /* compare PCB local addr+port to UDP destination addr+port */
@@ -353,8 +359,6 @@ udp_input(struct pbuf *p, struct netif *inp)
         /* pass broadcast- or multicast packets to all multicast pcbs
            if SOF_REUSEADDR is set on the first match */
         struct udp_pcb *mpcb;
-        u8_t p_header_changed = 0;
-        s16_t hdrs_len = (s16_t)(ip_current_header_tot_len() + UDP_HLEN);
         for (mpcb = udp_pcbs; mpcb != NULL; mpcb = mpcb->next) {
           if (mpcb != pcb) {
             /* compare PCB local addr+port to UDP destination addr+port */
@@ -363,27 +367,13 @@ udp_input(struct pbuf *p, struct netif *inp)
               /* pass a copy of the packet to all local matches */
               if (mpcb->recv != NULL) {
                 struct pbuf *q;
-                /* for that, move payload to IP header again */
-                if (p_header_changed == 0) {
-                  pbuf_header_force(p, hdrs_len);
-                  p_header_changed = 1;
-                }
-                q = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
+                q = pbuf_clone(PBUF_RAW, PBUF_POOL, p);
                 if (q != NULL) {
-                  err_t err = pbuf_copy(q, p);
-                  if (err == ERR_OK) {
-                    /* move payload to UDP data */
-                    pbuf_header(q, -hdrs_len);
-                    mpcb->recv(mpcb->recv_arg, mpcb, q, ip_current_src_addr(), src);
-                  }
+                  mpcb->recv(mpcb->recv_arg, mpcb, q, ip_current_src_addr(), src);
                 }
               }
             }
           }
-        }
-        if (p_header_changed) {
-          /* and move payload to UDP data again */
-          pbuf_header(p, -hdrs_len);
         }
       }
 #endif /* SO_REUSE && SO_REUSE_RXTOALL */
@@ -514,7 +504,6 @@ udp_sendto_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
 {
 #endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
   struct netif *netif;
-  const ip_addr_t *src_ip_route;
 
   if ((pcb == NULL) || (dst_ip == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
     return ERR_VAL;
@@ -522,50 +511,46 @@ udp_sendto_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
 
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE, ("udp_send\n"));
 
-  if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
-    /* Don't call ip_route() with IP_ANY_TYPE */
-    src_ip_route = IP46_ADDR_ANY(IP_GET_TYPE(dst_ip));
+  if (pcb->netif_idx != NETIF_NO_INDEX) {
+    netif = netif_get_by_index(pcb->netif_idx);
   } else {
-    src_ip_route = &pcb->local_ip;
-  }
-  LWIP_UNUSED_ARG(src_ip_route); /* IPv4 only and no source based routing */
-
 #if LWIP_MULTICAST_TX_OPTIONS
-  netif = NULL;
-  if (ip_addr_ismulticast(dst_ip)) {
-    /* For IPv6, the interface to use for packets with a multicast destination
-     * is specified using an interface index. The same approach may be used for
-     * IPv4 as well, in which case it overrides the IPv4 multicast override
-     * address below. Here we have to look up the netif by going through the
-     * list, but by doing so we skip a route lookup. If the interface index has
-     * gone stale, we fall through and do the regular route lookup after all. */
-    if (pcb->mcast_ifindex != NETIF_NO_INDEX) {
-      netif = netif_get_by_index(pcb->mcast_ifindex);
-    }
-#if LWIP_IPV4
-    else
-#if LWIP_IPV6
-    if (IP_IS_V4(dst_ip))
-#endif /* LWIP_IPV6 */
-    {
-      /* IPv4 does not use source-based routing by default, so we use an
-         administratively selected interface for multicast by default.
-         However, this can be overridden by setting an interface address
-         in pcb->mcast_ip4 that is used for routing. If this routing lookup
-         fails, we try regular routing as though no override was set. */
-      if (!ip4_addr_isany_val(pcb->mcast_ip4) &&
-          !ip4_addr_cmp(&pcb->mcast_ip4, IP4_ADDR_BROADCAST)) {
-        netif = ip4_route_src(ip_2_ip4(src_ip_route), &pcb->mcast_ip4);
+    netif = NULL;
+    if (ip_addr_ismulticast(dst_ip)) {
+      /* For IPv6, the interface to use for packets with a multicast destination
+       * is specified using an interface index. The same approach may be used for
+       * IPv4 as well, in which case it overrides the IPv4 multicast override
+       * address below. Here we have to look up the netif by going through the
+       * list, but by doing so we skip a route lookup. If the interface index has
+       * gone stale, we fall through and do the regular route lookup after all. */
+      if (pcb->mcast_ifindex != NETIF_NO_INDEX) {
+        netif = netif_get_by_index(pcb->mcast_ifindex);
       }
-    }
+#if LWIP_IPV4
+      else
+#if LWIP_IPV6
+      if (IP_IS_V4(dst_ip))
+#endif /* LWIP_IPV6 */
+      {
+        /* IPv4 does not use source-based routing by default, so we use an
+           administratively selected interface for multicast by default.
+           However, this can be overridden by setting an interface address
+           in pcb->mcast_ip4 that is used for routing. If this routing lookup
+           fails, we try regular routing as though no override was set. */
+        if (!ip4_addr_isany_val(pcb->mcast_ip4) &&
+            !ip4_addr_cmp(&pcb->mcast_ip4, IP4_ADDR_BROADCAST)) {
+          netif = ip4_route_src(&pcb->mcast_ip4, ip_2_ip4(&pcb->local_ip));
+        }
+      }
 #endif /* LWIP_IPV4 */
-  }
+    }
 
-  if (netif == NULL)
+    if (netif == NULL)
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
-  {
-    /* find the outgoing network interface for this packet */
-    netif = ip_route(src_ip_route, dst_ip);
+    {
+      /* find the outgoing network interface for this packet */
+      netif = ip_route(&pcb->local_ip, dst_ip);
+    }
   }
 
   /* no outgoing network interface could be found? */
@@ -859,9 +844,9 @@ udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *d
   LWIP_DEBUGF(UDP_DEBUG, ("udp_send: UDP checksum 0x%04"X16_F"\n", udphdr->chksum));
   LWIP_DEBUGF(UDP_DEBUG, ("udp_send: ip_output_if (,,,,0x%02"X16_F",)\n", (u16_t)ip_proto));
   /* output to IP */
-  NETIF_SET_HWADDRHINT(netif, &(pcb->addr_hint));
+  NETIF_SET_HINTS(netif, &(pcb->netif_hints));
   err = ip_output_if_src(q, src_ip, dst_ip, ttl, pcb->tos, ip_proto, netif);
-  NETIF_SET_HWADDRHINT(netif, NULL);
+  NETIF_RESET_HINTS(netif);
 
   /* @todo: must this be increased even if error occurred? */
   MIB2_STATS_INC(mib2.udpoutdatagrams);
@@ -989,9 +974,31 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
     udp_pcbs = pcb;
   }
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("udp_bind: bound to "));
-  ip_addr_debug_print(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, &pcb->local_ip);
+  ip_addr_debug_print_val(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, pcb->local_ip);
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, (", port %"U16_F")\n", pcb->local_port));
   return ERR_OK;
+}
+
+/**
+ * @ingroup udp_raw
+ * Bind an UDP PCB to a specific netif.
+ * After calling this function, all packets received via this PCB
+ * are guaranteed to have come in via the specified netif, and all
+ * outgoing packets will go out via the specified netif.
+ *
+ * @param pcb UDP PCB to be bound.
+ * @param netif netif to bind udp pcb to. Can be NULL.
+ *
+ * @see udp_disconnect()
+ */
+void
+udp_bind_netif(struct udp_pcb *pcb, const struct netif *netif)
+{
+  if (netif != NULL) {
+    pcb->netif_idx = netif_get_index(netif);
+  } else {
+    pcb->netif_idx = NETIF_NO_INDEX;
+  }
 }
 
 /**
@@ -1042,8 +1049,8 @@ udp_connect(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
   pcb->flags |= UDP_FLAGS_CONNECTED;
 
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("udp_connect: connected to "));
-  ip_addr_debug_print(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE,
-                      &pcb->remote_ip);
+  ip_addr_debug_print_val(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE,
+                      pcb->remote_ip);
   LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, (", port %"U16_F")\n", pcb->remote_port));
 
   /* Insert UDP PCB into the list of active UDP PCBs. */
@@ -1079,8 +1086,9 @@ udp_disconnect(struct udp_pcb *pcb)
   }
 #endif
   pcb->remote_port = 0;
+  pcb->netif_idx = NETIF_NO_INDEX;
   /* mark PCB as unconnected */
-  pcb->flags &= ~UDP_FLAGS_CONNECTED;
+  udp_clear_flags(pcb, UDP_FLAGS_CONNECTED);
 }
 
 /**

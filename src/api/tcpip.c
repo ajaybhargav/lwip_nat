@@ -252,18 +252,22 @@ tcpip_input(struct pbuf *p, struct netif *inp)
 }
 
 /**
+ * @ingroup lwip_os
  * Call a specific function in the thread context of
  * tcpip_thread for easy access synchronization.
  * A function called in that way may access lwIP core code
  * without fearing concurrent access.
+ * Blocks until the request is posted.
+ * Must not be called from interrupt context!
  *
  * @param function the function to call
  * @param ctx parameter passed to f
- * @param block 1 to block until the request is posted, 0 to non-blocking mode
  * @return ERR_OK if the function was called, another err_t if not
+ *
+ * @see tcpip_try_callback
  */
 err_t
-tcpip_callback_with_block(tcpip_callback_fn function, void *ctx, u8_t block)
+tcpip_callback(tcpip_callback_fn function, void *ctx)
 {
   struct tcpip_msg *msg;
 
@@ -277,13 +281,46 @@ tcpip_callback_with_block(tcpip_callback_fn function, void *ctx, u8_t block)
   msg->type = TCPIP_MSG_CALLBACK;
   msg->msg.cb.function = function;
   msg->msg.cb.ctx = ctx;
-  if (block) {
-    sys_mbox_post(&mbox, msg);
-  } else {
-    if (sys_mbox_trypost(&mbox, msg) != ERR_OK) {
-      memp_free(MEMP_TCPIP_MSG_API, msg);
-      return ERR_MEM;
-    }
+
+  sys_mbox_post(&mbox, msg);
+  return ERR_OK;
+}
+
+/**
+ * @ingroup lwip_os
+ * Call a specific function in the thread context of
+ * tcpip_thread for easy access synchronization.
+ * A function called in that way may access lwIP core code
+ * without fearing concurrent access.
+ * Does NOT block when the request cannot be posted because the
+ * mbox is full, but returns ERR_MEM instead.
+ * Can be called from interrupt context.
+ *
+ * @param function the function to call
+ * @param ctx parameter passed to f
+ * @return ERR_OK if the function was called, another err_t if not
+ *
+ * @see tcpip_callback
+ */
+err_t
+tcpip_try_callback(tcpip_callback_fn function, void *ctx)
+{
+  struct tcpip_msg *msg;
+
+  LWIP_ASSERT("Invalid mbox", sys_mbox_valid_val(mbox));
+
+  msg = (struct tcpip_msg *)memp_malloc(MEMP_TCPIP_MSG_API);
+  if (msg == NULL) {
+    return ERR_MEM;
+  }
+
+  msg->type = TCPIP_MSG_CALLBACK;
+  msg->msg.cb.function = function;
+  msg->msg.cb.ctx = ctx;
+
+  if (sys_mbox_trypost(&mbox, msg) != ERR_OK) {
+    memp_free(MEMP_TCPIP_MSG_API, msg);
+    return ERR_MEM;
   }
   return ERR_OK;
 }
@@ -531,7 +568,7 @@ pbuf_free_int(void *p)
 err_t
 pbuf_free_callback(struct pbuf *p)
 {
-  return tcpip_callback_with_block(pbuf_free_int, p, 0);
+  return tcpip_try_callback(pbuf_free_int, p);
 }
 
 /**
@@ -544,7 +581,7 @@ pbuf_free_callback(struct pbuf *p)
 err_t
 mem_free_callback(void *m)
 {
-  return tcpip_callback_with_block(mem_free, m, 0);
+  return tcpip_try_callback(mem_free, m);
 }
 
 #endif /* !NO_SYS */
