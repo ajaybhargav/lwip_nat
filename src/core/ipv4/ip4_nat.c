@@ -838,7 +838,7 @@ ip4_nat_udp_lookup_outgoing(ip4_nat_conf_t *nat_config, const struct ip_hdr *iph
     if (allocate) {
       if (last_free != -1) {
         nat_entry.udp = &ip4_nat_udp_table[last_free];
-        nat_entry.udp->nport = htons((u16_t) (LWIP_NAT_DEFAULT_UDP_SOURCE_PORT + i));
+        nat_entry.udp->nport = htons((u16_t) (LWIP_NAT_DEFAULT_UDP_SOURCE_PORT + last_free));
         nat_entry.udp->sport = udphdr->src;
         nat_entry.udp->dport = udphdr->dest;
         ip4_nat_cmn_init(nat_config, iphdr, nat_entry.cmn);
@@ -922,7 +922,7 @@ ip4_nat_tcp_lookup_outgoing(ip4_nat_conf_t *nat_config, const struct ip_hdr *iph
     if (allocate) {
       if (last_free != -1) {
         nat_entry.tcp = &ip4_nat_tcp_table[last_free];
-        nat_entry.tcp->nport = htons((u16_t) (LWIP_NAT_DEFAULT_TCP_SOURCE_PORT + i));
+        nat_entry.tcp->nport = htons((u16_t) (LWIP_NAT_DEFAULT_TCP_SOURCE_PORT + last_free));
         nat_entry.tcp->sport = tcphdr->src;
         nat_entry.tcp->dport = tcphdr->dest;
         ip4_nat_cmn_init(nat_config, iphdr, nat_entry.cmn);
