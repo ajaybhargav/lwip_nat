@@ -45,6 +45,10 @@
 #include "lwip/netif.h"
 #include "lwip/udp.h"
 
+#if LWIP_DHCP_DOES_ACD_CHECK
+#include "lwip/acd.h"
+#endif /* LWIP_DHCP_DOES_ACD_CHECK */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,22 +72,15 @@ struct dhcp
 {
   /** transaction identifier of last sent request */
   u32_t xid;
-  /** incoming msg */
-  struct dhcp_msg *msg_in;
   /** track PCB allocation state */
   u8_t pcb_allocated;
   /** current DHCP state machine state */
   u8_t state;
   /** retries of current request */
   u8_t tries;
-#if LWIP_DHCP_AUTOIP_COOP
-  u8_t autoip_coop_state;
-#endif
+
   u8_t subnet_mask_given;
 
-  struct pbuf *p_out; /* pbuf of outcoming msg */
-  struct dhcp_msg *msg_out; /* outgoing msg */
-  u16_t options_out_len; /* outgoing msg options length */
   u16_t request_timeout; /* #ticks with period DHCP_FINE_TIMER_SECS for request timeout */
   u16_t t1_timeout;  /* #ticks with period DHCP_COARSE_TIMER_SECS for renewal time */
   u16_t t2_timeout;  /* #ticks with period DHCP_COARSE_TIMER_SECS for rebind time */
@@ -103,6 +100,10 @@ struct dhcp
   ip4_addr_t offered_si_addr;
   char boot_file_name[DHCP_BOOT_FILE_LEN];
 #endif /* LWIP_DHCP_BOOTPFILE */
+#if LWIP_DHCP_DOES_ACD_CHECK
+  /** acd struct */
+  struct acd acd;
+#endif /* LWIP_DHCP_DOES_ACD_CHECK */
 };
 
 
@@ -116,10 +117,8 @@ err_t dhcp_release(struct netif *netif);
 void dhcp_stop(struct netif *netif);
 void dhcp_release_and_stop(struct netif *netif);
 void dhcp_inform(struct netif *netif);
-void dhcp_network_changed(struct netif *netif);
-#if DHCP_DOES_ARP_CHECK
-void dhcp_arp_reply(struct netif *netif, const ip4_addr_t *addr);
-#endif
+void dhcp_network_changed_link_up(struct netif *netif);
+
 u8_t dhcp_supplied_address(const struct netif *netif);
 /* to be called every minute */
 void dhcp_coarse_tmr(void);

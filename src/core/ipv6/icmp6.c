@@ -57,11 +57,9 @@
 
 #include <string.h>
 
-#ifndef LWIP_ICMP6_DATASIZE
-#define LWIP_ICMP6_DATASIZE   8
-#endif
-#if LWIP_ICMP6_DATASIZE == 0
-#define LWIP_ICMP6_DATASIZE   8
+#if !LWIP_ICMP6_DATASIZE || (LWIP_ICMP6_DATASIZE > (IP6_MIN_MTU_LENGTH - IP6_HLEN - ICMP6_HLEN))
+#undef LWIP_ICMP6_DATASIZE
+#define LWIP_ICMP6_DATASIZE   (IP6_MIN_MTU_LENGTH - IP6_HLEN - ICMP6_HLEN)
 #endif
 
 /* Forward declarations */
@@ -282,7 +280,8 @@ icmp6_time_exceeded_with_addrs(struct pbuf *p, enum icmp6_te_code c,
  * Send an icmpv6 'parameter problem' packet.
  *
  * This function must be used only in direct response to a packet that is being
- * received right now. Otherwise, address zones would be lost.
+ * received right now. Otherwise, address zones would be lost and the calculated
+ * offset would be wrong (calculated against ip6_current_header()).
  *
  * @param p the input packet for which the 'param problem' should be sent,
  *          p->payload pointing to the IP header
@@ -290,9 +289,10 @@ icmp6_time_exceeded_with_addrs(struct pbuf *p, enum icmp6_te_code c,
  * @param pointer the pointer to the byte where the parameter is found
  */
 void
-icmp6_param_problem(struct pbuf *p, enum icmp6_pp_code c, u32_t pointer)
+icmp6_param_problem(struct pbuf *p, enum icmp6_pp_code c, const void *pointer)
 {
-  icmp6_send_response(p, c, pointer, ICMP6_TYPE_PP);
+  u32_t pointer_u32 = (u32_t)((const u8_t *)pointer - (const u8_t *)ip6_current_header());
+  icmp6_send_response(p, c, pointer_u32, ICMP6_TYPE_PP);
 }
 
 /**
@@ -387,26 +387,26 @@ icmp6_send_response_with_addrs_and_netif(struct pbuf *p, u8_t code, u32_t data, 
 {
   struct pbuf *q;
   struct icmp6_hdr *icmp6hdr;
+  u16_t datalen = LWIP_MIN(p->tot_len, LWIP_ICMP6_DATASIZE);
 
-  /* ICMPv6 header + IPv6 header + data */
-  q = pbuf_alloc(PBUF_IP, sizeof(struct icmp6_hdr) + IP6_HLEN + LWIP_ICMP6_DATASIZE,
+  /* ICMPv6 header + datalen (as much of the offending packet as possible) */
+  q = pbuf_alloc(PBUF_IP, sizeof(struct icmp6_hdr) + datalen,
                  PBUF_RAM);
   if (q == NULL) {
     LWIP_DEBUGF(ICMP_DEBUG, ("icmp_time_exceeded: failed to allocate pbuf for ICMPv6 packet.\n"));
     ICMP6_STATS_INC(icmp6.memerr);
     return;
   }
-  LWIP_ASSERT("check that first pbuf can hold icmp 6message",
-             (q->len >= (sizeof(struct icmp6_hdr) + IP6_HLEN + LWIP_ICMP6_DATASIZE)));
+  LWIP_ASSERT("check that first pbuf can hold icmp6 header",
+             (q->len >= (sizeof(struct icmp6_hdr))));
 
   icmp6hdr = (struct icmp6_hdr *)q->payload;
   icmp6hdr->type = type;
   icmp6hdr->code = code;
-  icmp6hdr->data = data;
+  icmp6hdr->data = lwip_htonl(data);
 
   /* copy fields from original packet */
-  SMEMCPY((u8_t *)q->payload + sizeof(struct icmp6_hdr), (u8_t *)p->payload,
-          IP6_HLEN + LWIP_ICMP6_DATASIZE);
+  pbuf_take_at(q, p->payload, datalen, sizeof(struct icmp6_hdr));
 
   /* calculate checksum */
   icmp6hdr->chksum = 0;

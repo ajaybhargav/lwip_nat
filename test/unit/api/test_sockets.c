@@ -109,6 +109,7 @@ static void test_sockets_allfunctions_basic_domain(int domain)
   int s, s2, s3, ret;
   struct sockaddr_storage addr, addr2;
   socklen_t addrlen, addr2len;
+  char buf[4];
   /* listen socket */
   s = lwip_socket(domain, SOCK_STREAM, 0);
   fail_unless(s >= 0);
@@ -151,9 +152,51 @@ static void test_sockets_allfunctions_basic_domain(int domain)
   fail_unless(ret == -1);
   fail_unless(errno == EISCONN);
 
-  ret = lwip_close(s);
+  /* write from server to client */
+  ret = lwip_write(s3, "test", 4);
+  fail_unless(ret == 4);
+
+  ret = lwip_shutdown(s3, SHUT_WR);
   fail_unless(ret == 0);
+
+  while(tcpip_thread_poll_one());
+
+  ret = lwip_recv(s2, buf, 3, MSG_PEEK);
+  fail_unless(ret == 3);
+
+  ret = lwip_recv(s2, buf, 3, MSG_PEEK);
+  fail_unless(ret == 3);
+
+  ret = lwip_read(s2, buf, 4);
+  fail_unless(ret == 4);
+
+  ret = lwip_read(s2, buf, 1);
+  fail_unless(ret == 0);
+
+  ret = lwip_read(s2, buf, 1);
+  fail_unless(ret == -1);
+
+  ret = lwip_write(s2, "foo", 3);
+  fail_unless(ret == 3);
+
   ret = lwip_close(s2);
+  fail_unless(ret == 0);
+
+  while(tcpip_thread_poll_one());
+
+  /* read one byte more than available to check handling FIN */
+  ret = lwip_read(s3, buf, 4);
+  fail_unless(ret == 3);
+
+  ret = lwip_read(s3, buf, 1);
+  fail_unless(ret == 0);
+
+  ret = lwip_read(s3, buf, 1);
+  fail_unless(ret == -1);
+
+  while(tcpip_thread_poll_one());
+
+  ret = lwip_close(s);
   fail_unless(ret == 0);
   ret = lwip_close(s3);
   fail_unless(ret == 0);
@@ -207,11 +250,11 @@ static void test_sockets_init_loopback_addr(int domain, struct sockaddr_storage 
 
 static void test_sockets_msgapi_update_iovs(struct msghdr *msg, size_t bytes)
 {
-  int i;
+  msg_iovlen_t i;
 
   /* note: this modifies the underyling iov_base and iov_len for a partial
      read for an individual vector. This updates the msg->msg_iov pointer
-     to skip fully consumed vecotrs */
+     to skip fully consumed vectors */
   
   /* process fully consumed vectors */
   for (i = 0; i < msg->msg_iovlen; i++) {
@@ -287,7 +330,7 @@ static void test_sockets_msgapi_tcp(int domain)
 
   /* set s2 to non-blocking, not inherited from listener */
   opt = lwip_fcntl(s2, F_GETFL, 0);
-  fail_unless(opt == 6);
+  fail_unless(opt == O_RDWR);
   opt = O_NONBLOCK;
   ret = lwip_fcntl(s2, F_SETFL, opt);
   fail_unless(ret == 0);

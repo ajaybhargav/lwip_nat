@@ -33,11 +33,15 @@ TESTDIR=$(LWIPDIR)/../test/unit
 TESTFILES=$(TESTDIR)/lwip_unittests.c \
 	$(TESTDIR)/api/test_sockets.c \
 	$(TESTDIR)/arch/sys_arch.c \
+	$(TESTDIR)/core/test_def.c \
 	$(TESTDIR)/core/test_mem.c \
+	$(TESTDIR)/core/test_netif.c \
 	$(TESTDIR)/core/test_pbuf.c \
+	$(TESTDIR)/core/test_timers.c \
 	$(TESTDIR)/dhcp/test_dhcp.c \
 	$(TESTDIR)/etharp/test_etharp.c \
 	$(TESTDIR)/ip4/test_ip4.c \
+	$(TESTDIR)/ip6/test_ip6.c \
 	$(TESTDIR)/mdns/test_mdns.c \
 	$(TESTDIR)/mqtt/test_mqtt.c \
 	$(TESTDIR)/tcp/tcp_helper.c \

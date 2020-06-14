@@ -52,13 +52,13 @@
 #include "lwip/ip4.h"
 #include "lwip/prot/ethernet.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #if LWIP_IPV4 && LWIP_ARP /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/prot/etharp.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** 1 seconds period */
 #define ARP_TMR_INTERVAL 1000
@@ -75,9 +75,9 @@ struct etharp_q_entry {
 
 #define etharp_init() /* Compatibility define, no init needed. */
 void etharp_tmr(void);
-s8_t etharp_find_addr(struct netif *netif, const ip4_addr_t *ipaddr,
+ssize_t etharp_find_addr(struct netif *netif, const ip4_addr_t *ipaddr,
          struct eth_addr **eth_ret, const ip4_addr_t **ip_ret);
-u8_t etharp_get_entry(u8_t i, ip4_addr_t **ipaddr, struct netif **netif, struct eth_addr **eth_ret);
+int etharp_get_entry(size_t i, ip4_addr_t **ipaddr, struct netif **netif, struct eth_addr **eth_ret);
 err_t etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr);
 err_t etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q);
 err_t etharp_request(struct netif *netif, const ip4_addr_t *ipaddr);
@@ -88,12 +88,15 @@ err_t etharp_request(struct netif *netif, const ip4_addr_t *ipaddr);
 #define etharp_gratuitous(netif) etharp_request((netif), netif_ip4_addr(netif))
 void etharp_cleanup_netif(struct netif *netif);
 
+#if LWIP_ACD
+err_t etharp_acd_probe(struct netif *netif, const ip4_addr_t *ipaddr);
+err_t etharp_acd_announce(struct netif *netif, const ip4_addr_t *ipaddr);
+#endif /* LWIP_ACD */
+
 #if ETHARP_SUPPORT_STATIC_ENTRIES
 err_t etharp_add_static_entry(const ip4_addr_t *ipaddr, struct eth_addr *ethaddr);
 err_t etharp_remove_static_entry(const ip4_addr_t *ipaddr);
 #endif /* ETHARP_SUPPORT_STATIC_ENTRIES */
-
-#endif /* LWIP_IPV4 && LWIP_ARP */
 
 void etharp_input(struct pbuf *p, struct netif *netif);
 
@@ -101,6 +104,7 @@ void etharp_input(struct pbuf *p, struct netif *netif);
 }
 #endif
 
+#endif /* LWIP_IPV4 && LWIP_ARP */
 #endif /* LWIP_ARP || LWIP_ETHERNET */
 
 #endif /* LWIP_HDR_NETIF_ETHARP_H */

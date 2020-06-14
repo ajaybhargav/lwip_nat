@@ -29,12 +29,12 @@ Or, obtain a specific (fixed) release as follows:
 The Savannah server uses SSH (Secure Shell) protocol 2 authentication and encryption.
 As such, Git commits to the server occur through a SSH tunnel for project members.
 To create a SSH2 key pair in UNIX-like environments, do this:
- ssh-keygen -t dsa
+ ssh-keygen
 
 Under Windows, a recommended SSH client is "PuTTY", freely available with good
 documentation and a graphic user interface. Use its key generator.
 
-Now paste the id_dsa.pub contents into your Savannah account public key list. Wait
+Now paste the id_rsa.pub contents into your Savannah account public key list. Wait
 a while so that Savannah can update its configuration (This can take minutes).
 
 Try to login using SSH:
@@ -107,9 +107,8 @@ Now, sign the archives with a detached GPG binary signature as follows:
  gpg -b lwip-1.4.1.tar.bz2
  gpg -b lwip-1.4.1.zip
 
-Upload these files using anonymous FTP:
- ncftp ftp://savannah.gnu.org/incoming/savannah/lwip
- ncftp> mput *1.4.1.*
+Upload these files using scp:
+ scp lwip-1.4.1.* <username>@dl.sv.nongnu.org:/releases/lwip/
 
 Additionally, you may post a news item on Savannah, like this:
 

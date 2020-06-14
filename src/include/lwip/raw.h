@@ -1,6 +1,6 @@
 /**
  * @file
- * raw API (to be used from TCPIP thread)\n
+ * raw API (to be used from TCPIP thread)<br>
  * See also @ref raw_raw
  */
 
@@ -119,14 +119,10 @@ void             raw_recv       (struct raw_pcb *pcb, raw_recv_fn recv, void *re
 #define          raw_setflags(pcb,f)  ((pcb)->flags = (f))
 
 #define          raw_set_flags(pcb, set_flags)     do { (pcb)->flags = (u8_t)((pcb)->flags |  (set_flags)); } while(0)
-#define          raw_clear_flags(pcb, clr_flags)   do { (pcb)->flags = (u8_t)((pcb)->flags & ~(clr_flags)); } while(0)
+#define          raw_clear_flags(pcb, clr_flags)   do { (pcb)->flags = (u8_t)((pcb)->flags & (u8_t)(~(clr_flags) & 0xff)); } while(0)
 #define          raw_is_flag_set(pcb, flag)        (((pcb)->flags & (flag)) != 0)
 
-/* The following functions are the lower layer interface to RAW. */
-u8_t             raw_input      (struct pbuf *p, struct netif *inp);
 #define raw_init() /* Compatibility define, no init needed. */
-
-void raw_netif_ip_addr_changed(const ip_addr_t* old_addr, const ip_addr_t* new_addr);
 
 /* for compatibility with older implementation */
 #define raw_new_ip6(proto) raw_new_ip_type(IPADDR_TYPE_V6, proto)

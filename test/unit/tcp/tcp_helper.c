@@ -3,6 +3,7 @@
 #include "lwip/priv/tcp_priv.h"
 #include "lwip/stats.h"
 #include "lwip/pbuf.h"
+#include "lwip/inet.h"
 #include "lwip/inet_chksum.h"
 #include "lwip/ip_addr.h"
 
@@ -33,6 +34,7 @@ void
 tcp_remove_all(void)
 {
   tcp_remove(tcp_listen_pcbs.pcbs);
+  tcp_remove(tcp_bound_pcbs);
   tcp_remove(tcp_active_pcbs);
   tcp_remove(tcp_tw_pcbs);
   fail_unless(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);

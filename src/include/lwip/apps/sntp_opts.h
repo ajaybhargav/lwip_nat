@@ -38,6 +38,7 @@
 #define LWIP_HDR_APPS_SNTP_OPTS_H
 
 #include "lwip/opt.h"
+#include "lwip/prot/iana.h"
 
 /**
  * @defgroup sntp_opts Options
@@ -66,6 +67,12 @@
 #define SNTP_GET_SERVERS_FROM_DHCP LWIP_DHCP_GET_NTP_SRV
 #endif
 
+/** Set this to 1 to implement the callback function called by dhcpv6 when
+ * NTP servers are received. */
+#if !defined SNTP_GET_SERVERS_FROM_DHCPV6 || defined __DOXYGEN__
+#define SNTP_GET_SERVERS_FROM_DHCPV6 LWIP_DHCP6_GET_NTP_SRV
+#endif
+
 /** Set this to 1 to support DNS names (or IP address strings) to set sntp servers
  * One server address/name can be defined as default if SNTP_SERVER_DNS == 1:
  * \#define SNTP_SERVER_ADDRESS "pool.ntp.org"
@@ -83,7 +90,7 @@
 
 /** SNTP server port */
 #if !defined SNTP_PORT || defined __DOXYGEN__
-#define SNTP_PORT                   123
+#define SNTP_PORT                   LWIP_IANA_PORT_SNTP
 #endif
 
 /** Sanity check:
@@ -192,6 +199,13 @@
  */
 #if !defined SNTP_RETRY_TIMEOUT_EXP || defined __DOXYGEN__
 #define SNTP_RETRY_TIMEOUT_EXP      1
+#endif
+
+/** Keep a reachability shift register per server
+ * Default is on to conform to RFC.
+ */
+#if !defined SNTP_MONITOR_SERVER_REACHABILITY || defined __DOXYGEN__
+#define SNTP_MONITOR_SERVER_REACHABILITY 1
 #endif
 
 /**

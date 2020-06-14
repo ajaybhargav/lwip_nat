@@ -5,8 +5,8 @@
  * @defgroup netbuf Network buffers
  * @ingroup netconn
  * Network buffer descriptor for @ref netconn. Based on @ref pbuf internally
- * to avoid copying data around.\n
- * Buffers must not be shared accross multiple threads, all functions except
+ * to avoid copying data around.<br>
+ * Buffers must not be shared across multiple threads, all functions except
  * netbuf_new() and netbuf_delete() are not thread-safe.
  */
 
@@ -109,10 +109,10 @@ netbuf_alloc(struct netbuf *buf, u16_t size)
   }
   buf->p = pbuf_alloc(PBUF_TRANSPORT, size, PBUF_RAM);
   if (buf->p == NULL) {
-     return NULL;
+    return NULL;
   }
   LWIP_ASSERT("check that first pbuf can hold size",
-             (buf->p->len >= size));
+              (buf->p->len >= size));
   buf->ptr = buf->p;
   return buf->p->payload;
 }
@@ -159,7 +159,7 @@ netbuf_ref(struct netbuf *buf, const void *dataptr, u16_t size)
     buf->ptr = NULL;
     return ERR_MEM;
   }
-  ((struct pbuf_rom*)buf->p)->payload = dataptr;
+  ((struct pbuf_rom *)buf->p)->payload = dataptr;
   buf->p->len = buf->p->tot_len = size;
   buf->ptr = buf->p;
   return ERR_OK;

@@ -105,6 +105,8 @@ extern const ip_addr_t ip_addr_any_type;
 #define IP_SET_TYPE(ipaddr, iptype)     do { if((ipaddr) != NULL) { IP_SET_TYPE_VAL(*(ipaddr), iptype); }}while(0)
 #define IP_GET_TYPE(ipaddr)           ((ipaddr)->type)
 
+#define IP_ADDR_RAW_SIZE(ipaddr)      (IP_GET_TYPE(&ipaddr) == IPADDR_TYPE_V4 ? sizeof(ip4_addr_t) : sizeof(ip6_addr_t))
+
 #define IP_ADDR_PCB_VERSION_MATCH_EXACT(pcb, ipaddr) (IP_GET_TYPE(&pcb->local_ip) == IP_GET_TYPE(ipaddr))
 #define IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr) (IP_IS_ANY_TYPE_VAL(pcb->local_ip) || IP_ADDR_PCB_VERSION_MATCH_EXACT(pcb, ipaddr))
 
@@ -201,9 +203,13 @@ extern const ip_addr_t ip_addr_any_type;
   ip6_addr_cmp(ip_2_ip6(addr1), ip_2_ip6(addr2)) : \
   ip4_addr_cmp(ip_2_ip4(addr1), ip_2_ip4(addr2))))
 /** @ingroup ipaddr */
-#define ip_addr_isany(ipaddr)        ((IP_IS_V6(ipaddr)) ? \
+#define ip_addr_cmp_zoneless(addr1, addr2)    ((IP_GET_TYPE(addr1) != IP_GET_TYPE(addr2)) ? 0 : (IP_IS_V6_VAL(*(addr1)) ? \
+  ip6_addr_cmp_zoneless(ip_2_ip6(addr1), ip_2_ip6(addr2)) : \
+  ip4_addr_cmp(ip_2_ip4(addr1), ip_2_ip4(addr2))))
+/** @ingroup ipaddr */
+#define ip_addr_isany(ipaddr)        (((ipaddr) == NULL) ? 1 : ((IP_IS_V6(ipaddr)) ? \
   ip6_addr_isany(ip_2_ip6(ipaddr)) : \
-  ip4_addr_isany(ip_2_ip4(ipaddr)))
+  ip4_addr_isany(ip_2_ip4(ipaddr))))
 /** @ingroup ipaddr */
 #define ip_addr_isany_val(ipaddr)        ((IP_IS_V6_VAL(ipaddr)) ? \
   ip6_addr_isany_val(*ip_2_ip6(&(ipaddr))) : \
@@ -272,6 +278,7 @@ typedef ip4_addr_t ip_addr_t;
 #define IP_SET_TYPE_VAL(ipaddr, iptype)
 #define IP_SET_TYPE(ipaddr, iptype)
 #define IP_GET_TYPE(ipaddr)                     IPADDR_TYPE_V4
+#define IP_ADDR_RAW_SIZE(ipaddr)                sizeof(ip4_addr_t)
 #define ip_2_ip4(ipaddr)                        (ipaddr)
 #define IP_ADDR4(ipaddr,a,b,c,d)                IP4_ADDR(ipaddr,a,b,c,d)
 
@@ -319,6 +326,7 @@ typedef ip6_addr_t ip_addr_t;
 #define IP_SET_TYPE_VAL(ipaddr, iptype)
 #define IP_SET_TYPE(ipaddr, iptype)
 #define IP_GET_TYPE(ipaddr)                     IPADDR_TYPE_V6
+#define IP_ADDR_RAW_SIZE(ipaddr)                sizeof(ip6_addr_t)
 #define ip_2_ip6(ipaddr)                        (ipaddr)
 #define IP_ADDR6(ipaddr,i0,i1,i2,i3)            IP6_ADDR(ipaddr,i0,i1,i2,i3)
 #define IP_ADDR6_HOST(ipaddr,i0,i1,i2,i3)       IP_ADDR6(ipaddr,PP_HTONL(i0),PP_HTONL(i1),PP_HTONL(i2),PP_HTONL(i3))
@@ -336,6 +344,7 @@ typedef ip6_addr_t ip_addr_t;
 #define ip_addr_get_network(target, host, mask) ip6_addr_set_zero(target)
 #define ip_addr_netcmp(addr1, addr2, mask)      0
 #define ip_addr_cmp(addr1, addr2)               ip6_addr_cmp(addr1, addr2)
+#define ip_addr_cmp_zoneless(addr1, addr2)      ip6_addr_cmp_zoneless(addr1, addr2)
 #define ip_addr_isany(ipaddr)                   ip6_addr_isany(ipaddr)
 #define ip_addr_isany_val(ipaddr)               ip6_addr_isany_val(ipaddr)
 #define ip_addr_isloopback(ipaddr)              ip6_addr_isloopback(ipaddr)
@@ -395,7 +404,7 @@ extern const ip_addr_t ip_addr_broadcast;
 
 extern const ip_addr_t ip6_addr_any;
 
-/** 
+/**
  * @ingroup ip6addr
  * IP6_ADDR_ANY can be used as a fixed ip_addr_t
  * for the IPv6 wildcard address

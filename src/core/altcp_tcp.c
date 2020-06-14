@@ -1,6 +1,7 @@
 /**
  * @file
- * Application layered TCP connection API (to be used from TCPIP thread)\n
+ * Application layered TCP connection API (to be used from TCPIP thread)
+ *
  * This interface mimics the tcp callback API to the application while preventing
  * direct linking (much like virtual functions).
  * This way, an application can make use of other application layer protocols
@@ -49,13 +50,17 @@
 #include "lwip/altcp_tcp.h"
 #include "lwip/priv/altcp_priv.h"
 #include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"
 #include "lwip/mem.h"
 
 #include <string.h>
 
-#define ALTCP_TCP_ASSERT_CONN(conn) LWIP_ASSERT("conn->inner_conn == NULL", (conn)->inner_conn == NULL)
+#define ALTCP_TCP_ASSERT_CONN(conn) do { \
+  LWIP_ASSERT("conn->inner_conn == NULL", (conn)->inner_conn == NULL); \
+  LWIP_UNUSED_ARG(conn); /* for LWIP_NOASSERT */ } while(0)
 #define ALTCP_TCP_ASSERT_CONN_PCB(conn, tpcb) do { \
   LWIP_ASSERT("pcb mismatch", (conn)->state == tpcb); \
+  LWIP_UNUSED_ARG(tpcb); /* for LWIP_NOASSERT */ \
   ALTCP_TCP_ASSERT_CONN(conn); } while(0)
 
 
@@ -143,23 +148,39 @@ altcp_tcp_err(void *arg, err_t err)
 {
   struct altcp_pcb *conn = (struct altcp_pcb *)arg;
   if (conn) {
-    conn->state = NULL;
+    conn->state = NULL; /* already freed */
     if (conn->err) {
       conn->err(conn->arg, err);
     }
+    altcp_free(conn);
   }
 }
 
 /* setup functions */
+
+static void
+altcp_tcp_remove_callbacks(struct tcp_pcb *tpcb)
+{
+  tcp_arg(tpcb, NULL);
+  if (tpcb->state != LISTEN) {
+    tcp_recv(tpcb, NULL);
+    tcp_sent(tpcb, NULL);
+    tcp_err(tpcb, NULL);
+    tcp_poll(tpcb, NULL, tpcb->pollinterval);
+  }
+}
+
 static void
 altcp_tcp_setup_callbacks(struct altcp_pcb *conn, struct tcp_pcb *tpcb)
 {
   tcp_arg(tpcb, conn);
-  tcp_recv(tpcb, altcp_tcp_recv);
-  tcp_sent(tpcb, altcp_tcp_sent);
-  tcp_err(tpcb, altcp_tcp_err);
-  /* tcp_poll is set when interval is set by application */
-  /* listen is set totally different :-) */
+  /* this might be called for LISTN when close fails... */
+  if (tpcb->state != LISTEN) {
+    tcp_recv(tpcb, altcp_tcp_recv);
+    tcp_sent(tpcb, altcp_tcp_sent);
+    tcp_err(tpcb, altcp_tcp_err);
+    /* tcp_poll is set when interval is set by application */
+  }
 }
 
 static void
@@ -173,19 +194,44 @@ altcp_tcp_setup(struct altcp_pcb *conn, struct tcp_pcb *tpcb)
 struct altcp_pcb *
 altcp_tcp_new_ip_type(u8_t ip_type)
 {
-  /* FIXME: pool alloc */
-  struct altcp_pcb *ret = altcp_alloc();
-  if (ret != NULL) {
-    struct tcp_pcb *tpcb = tcp_new_ip_type(ip_type);
-    if (tpcb != NULL) {
+  /* Allocate the tcp pcb first to invoke the priority handling code
+     if we're out of pcbs */
+  struct tcp_pcb *tpcb = tcp_new_ip_type(ip_type);
+  if (tpcb != NULL) {
+    struct altcp_pcb *ret = altcp_alloc();
+    if (ret != NULL) {
       altcp_tcp_setup(ret, tpcb);
+      return ret;
     } else {
-      /* tcp_pcb allocation failed -> free the altcp_pcb too */
-      altcp_free(ret);
-      ret = NULL;
+      /* altcp_pcb allocation failed -> free the tcp_pcb too */
+      tcp_close(tpcb);
     }
   }
-  return ret;
+  return NULL;
+}
+
+/** altcp_tcp allocator function fitting to @ref altcp_allocator_t / @ref altcp_new.
+*
+* arg pointer is not used for TCP.
+*/
+struct altcp_pcb *
+altcp_tcp_alloc(void *arg, u8_t ip_type)
+{
+  LWIP_UNUSED_ARG(arg);
+  return altcp_tcp_new_ip_type(ip_type);
+}
+
+struct altcp_pcb *
+altcp_tcp_wrap(struct tcp_pcb *tpcb)
+{
+  if (tpcb != NULL) {
+    struct altcp_pcb *ret = altcp_alloc();
+    if (ret != NULL) {
+      altcp_tcp_setup(ret, tpcb);
+      return ret;
+    }
+  }
+  return NULL;
 }
 
 
@@ -260,7 +306,9 @@ altcp_tcp_abort(struct altcp_pcb *conn)
   if (conn != NULL) {
     struct tcp_pcb *pcb = (struct tcp_pcb *)conn->state;
     ALTCP_TCP_ASSERT_CONN(conn);
-    tcp_abort(pcb);
+    if (pcb) {
+      tcp_abort(pcb);
+    }
   }
 }
 
@@ -273,7 +321,22 @@ altcp_tcp_close(struct altcp_pcb *conn)
   }
   ALTCP_TCP_ASSERT_CONN(conn);
   pcb = (struct tcp_pcb *)conn->state;
-  return tcp_close(pcb);
+  if (pcb) {
+    err_t err;
+    tcp_poll_fn oldpoll = pcb->poll;
+    altcp_tcp_remove_callbacks(pcb);
+    err = tcp_close(pcb);
+    if (err != ERR_OK) {
+      /* not closed, set up all callbacks again */
+      altcp_tcp_setup_callbacks(conn, pcb);
+      /* poll callback is not included in the above */
+      tcp_poll(pcb, oldpoll, pcb->pollinterval);
+      return err;
+    }
+    conn->state = NULL; /* unsafe to reference pcb after tcp_close(). */
+  }
+  altcp_free(conn);
+  return ERR_OK;
 }
 
 static err_t
@@ -389,6 +452,31 @@ altcp_tcp_setprio(struct altcp_pcb *conn, u8_t prio)
   }
 }
 
+#if LWIP_TCP_KEEPALIVE
+static void
+altcp_tcp_keepalive_disable(struct altcp_pcb *conn)
+{
+  if (conn && conn->state) {
+    struct tcp_pcb *pcb = (struct tcp_pcb *)conn->state;
+    ALTCP_TCP_ASSERT_CONN(conn);
+    ip_reset_option(pcb, SOF_KEEPALIVE);
+  }
+}
+
+static void
+altcp_tcp_keepalive_enable(struct altcp_pcb *conn, u32_t idle, u32_t intvl, u32_t cnt)
+{
+  if (conn && conn->state) {
+    struct tcp_pcb *pcb = (struct tcp_pcb *)conn->state;
+    ALTCP_TCP_ASSERT_CONN(conn);
+    ip_set_option(pcb, SOF_KEEPALIVE);
+    pcb->keep_idle = idle ? idle : TCP_KEEPIDLE_DEFAULT;
+    pcb->keep_intvl = intvl ? intvl : TCP_KEEPINTVL_DEFAULT;
+    pcb->keep_cnt = cnt ? cnt : TCP_KEEPCNT_DEFAULT;
+  }
+}
+#endif
+
 static void
 altcp_tcp_dealloc(struct altcp_pcb *conn)
 {
@@ -478,8 +566,12 @@ const struct altcp_functions altcp_tcp_functions = {
   altcp_tcp_get_tcp_addrinfo,
   altcp_tcp_get_ip,
   altcp_tcp_get_port
+#if LWIP_TCP_KEEPALIVE
+  , altcp_tcp_keepalive_disable
+  , altcp_tcp_keepalive_enable
+#endif
 #ifdef LWIP_DEBUG
-  ,altcp_tcp_dbg_get_tcp_state
+  , altcp_tcp_dbg_get_tcp_state
 #endif
 };
 

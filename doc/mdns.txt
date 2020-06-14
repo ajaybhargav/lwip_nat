@@ -45,7 +45,7 @@ This opens UDP sockets on port 5353 for IPv4 and IPv6.
 
 
 To start responding on a netif, run
-  mdns_resp_add_netif(struct netif *netif, char *hostname, u32_t dns_ttl)
+  mdns_resp_add_netif(struct netif *netif, const char *hostname)
 
 The hostname will be copied. If this returns successfully, the netif will join
 the multicast groups and any MDNS/legacy DNS requests sent unicast or multicast
@@ -53,15 +53,14 @@ to port 5353 will be handled:
 - <hostname>.local type A, AAAA or ANY returns relevant IP addresses
 - Reverse lookups (PTR in-addr.arpa, ip6.arpa) of netif addresses
   returns <hostname>.local
-Answers will use the supplied TTL (in seconds)
 MDNS allows UTF-8 names, but it is recommended to stay within ASCII,
 since the default case-insensitive comparison assumes this.
 
-It is recommended to call this function after an IPv4 address has been set,
-since there is currently no check if the v4 address is valid.
+Call mdns_resp_announce() every time the IP address on the netif has changed.
 
-Call mdns_resp_netif_settings_changed() every time the IP address
-on the netif has changed.
+Call mdns_resp_restart() every time the network interface comes up after being
+down, for example cable connected after being disconnected, administrative 
+interface comes up after being down, or the device wakes up from sleep.
 
 To stop responding on a netif, run
   mdns_resp_remove_netif(struct netif *netif)
@@ -71,8 +70,8 @@ Adding services:
 ================
 
 The netif first needs to be registered. Then run
-  mdns_resp_add_service(struct netif *netif, char *name, char *service,
-      u16_t proto, u16_t port, u32_t dns_ttl,
+  mdns_resp_add_service(struct netif *netif, const char *name, const char *service,
+      enum mdns_sd_proto proto, u16_t port,
       service_get_txt_fn_t txt_fn, void *txt_userdata);
 
 The name and service pointers will be copied. Name refers to the name of the
@@ -100,7 +99,7 @@ If this call returns successfully, the following queries will be answered:
 If your device runs a webserver on port 80, an example call might be:
 
   mdns_resp_add_service(netif, "myweb", "_http"
-      DNSSD_PROTO_TCP, 80, 3600, srv_txt, NULL);
+      DNSSD_PROTO_TCP, 80, srv_txt, NULL);
 
 which will publish myweb._http._tcp.local for any hosts looking for web servers,
 and point them to <hostname>.local:80
@@ -108,6 +107,5 @@ and point them to <hostname>.local:80
 Relevant information will be sent as additional records to reduce number of
 requests required from a client.
 
-Removing services is currently not supported. Services are removed when the
-netif is removed.
-
+To remove a service from a netif, run
+  mdns_resp_del_service(struct netif *netif, u8_t slot)

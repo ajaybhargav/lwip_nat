@@ -1,8 +1,8 @@
 #
 # Copyright (c) 2001, 2002 Swedish Institute of Computer Science.
-# All rights reserved. 
-# 
-# Redistribution and use in source and binary forms, with or without modification, 
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification,
 # are permitted provided that the following conditions are met:
 #
 # 1. Redistributions of source code must retain the above copyright notice,
@@ -11,21 +11,21 @@
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
 # 3. The name of the author may not be used to endorse or promote products
-#    derived from this software without specific prior written permission. 
+#    derived from this software without specific prior written permission.
 #
-# THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED 
-# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
-# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT 
-# SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, 
-# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT 
-# OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING 
-# IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT
+# SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+# OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+# IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
 # OF SUCH DAMAGE.
 #
 # This file is part of the lwIP TCP/IP stack.
-# 
+#
 # Author: Adam Dunkels <adam@sics.se>
 #
 
@@ -43,6 +43,7 @@ COREFILES=$(LWIPDIR)/core/init.c \
 	$(LWIPDIR)/core/stats.c \
 	$(LWIPDIR)/core/sys.c \
 	$(LWIPDIR)/core/altcp.c \
+	$(LWIPDIR)/core/altcp_alloc.c \
 	$(LWIPDIR)/core/altcp_tcp.c \
 	$(LWIPDIR)/core/tcp.c \
 	$(LWIPDIR)/core/tcp_in.c \
@@ -50,7 +51,8 @@ COREFILES=$(LWIPDIR)/core/init.c \
 	$(LWIPDIR)/core/timeouts.c \
 	$(LWIPDIR)/core/udp.c
 
-CORE4FILES=$(LWIPDIR)/core/ipv4/autoip.c \
+CORE4FILES=$(LWIPDIR)/core/ipv4/acd.c \
+	$(LWIPDIR)/core/ipv4/autoip.c \
 	$(LWIPDIR)/core/ipv4/dhcp.c \
 	$(LWIPDIR)/core/ipv4/etharp.c \
 	$(LWIPDIR)/core/ipv4/icmp.c \
@@ -83,10 +85,14 @@ APIFILES=$(LWIPDIR)/api/api_lib.c \
 # NETIFFILES: Files implementing various generic network interface functions
 NETIFFILES=$(LWIPDIR)/netif/ethernet.c \
 	$(LWIPDIR)/netif/bridgeif.c \
+	$(LWIPDIR)/netif/bridgeif_fdb.c \
 	$(LWIPDIR)/netif/slipif.c
 
 # SIXLOWPAN: 6LoWPAN
-SIXLOWPAN=$(LWIPDIR)/netif/lowpan6.c \
+SIXLOWPAN=$(LWIPDIR)/netif/lowpan6_common.c \
+        $(LWIPDIR)/netif/lowpan6.c \
+	$(LWIPDIR)/netif/lowpan6_ble.c \
+	$(LWIPDIR)/netif/zepif.c
 
 # PPPFILES: PPP
 PPPFILES=$(LWIPDIR)/netif/ppp/auth.c \
@@ -152,9 +158,14 @@ SNMPFILES=$(LWIPDIR)/apps/snmp/snmp_asn1.c \
 	$(LWIPDIR)/apps/snmp/snmp_threadsync.c \
 	$(LWIPDIR)/apps/snmp/snmp_traps.c
 
-# HTTPDFILES: HTTP server
-HTTPDFILES=$(LWIPDIR)/apps/httpd/fs.c \
-	$(LWIPDIR)/apps/httpd/httpd.c
+# HTTPFILES: HTTP server + client
+HTTPFILES=$(LWIPDIR)/apps/http/altcp_proxyconnect.c \
+	$(LWIPDIR)/apps/http/fs.c \
+	$(LWIPDIR)/apps/http/http_client.c \
+	$(LWIPDIR)/apps/http/httpd.c
+
+# MAKEFSDATA: MAKEFSDATA HTTP server host utility
+MAKEFSDATAFILES=$(LWIPDIR)/apps/http/makefsdata/makefsdata.c
 
 # LWIPERFFILES: IPERF server
 LWIPERFFILES=$(LWIPDIR)/apps/lwiperf/lwiperf.c
@@ -166,13 +177,15 @@ SMTPFILES=$(LWIPDIR)/apps/smtp/smtp.c
 SNTPFILES=$(LWIPDIR)/apps/sntp/sntp.c
 
 # MDNSFILES: MDNS responder
-MDNSFILES=$(LWIPDIR)/apps/mdns/mdns.c
+MDNSFILES=$(LWIPDIR)/apps/mdns/mdns.c \
+	$(LWIPDIR)/apps/mdns/mdns_out.c \
+	$(LWIPDIR)/apps/mdns/mdns_domain.c
 
 # NETBIOSNSFILES: NetBIOS name server
 NETBIOSNSFILES=$(LWIPDIR)/apps/netbiosns/netbiosns.c
 
-# TFTPFILES: TFTP server files
-TFTPFILES=$(LWIPDIR)/apps/tftp/tftp_server.c
+# TFTPFILES: TFTP client/server files
+TFTPFILES=$(LWIPDIR)/apps/tftp/tftp.c
 
 # MQTTFILES: MQTT client files
 MQTTFILES=$(LWIPDIR)/apps/mqtt/mqtt.c
@@ -184,7 +197,7 @@ MBEDTLS_FILES=$(LWIPDIR)/apps/altcp_tls/altcp_tls_mbedtls.c \
 
 # LWIPAPPFILES: All LWIP APPs
 LWIPAPPFILES=$(SNMPFILES) \
-	$(HTTPDFILES) \
+	$(HTTPFILES) \
 	$(LWIPERFFILES) \
 	$(SMTPFILES) \
 	$(SNTPFILES) \

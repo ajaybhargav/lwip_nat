@@ -43,15 +43,24 @@
 
 #if LWIP_SOCKET /* don't build if not configured for use in lwipopts.h */
 
+#if LWIP_SOCKET_EXTERNAL_HEADERS
+#include LWIP_SOCKET_EXTERNAL_HEADER_SOCKETS_H
+#else /* LWIP_SOCKET_EXTERNAL_HEADERS */
+
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "lwip/err.h"
 #include "lwip/inet.h"
 #include "lwip/errno.h"
 
+#include <string.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* sockaddr and pals include length fields */
+#define LWIP_SOCKET_HAVE_SA_LEN  1
 
 /* If your port already typedef's sa_family_t, define SA_FAMILY_T_DEFINED
    to prevent this code from redefining it. */
@@ -122,11 +131,13 @@ struct iovec {
 };
 #endif
 
+typedef int msg_iovlen_t;
+
 struct msghdr {
   void         *msg_name;
   socklen_t     msg_namelen;
   struct iovec *msg_iov;
-  int           msg_iovlen;
+  msg_iovlen_t  msg_iovlen;
   void         *msg_control;
   socklen_t     msg_controllen;
   int           msg_flags;
@@ -327,6 +338,21 @@ struct in_pktinfo {
 };
 #endif /* LWIP_IPV4 */
 
+#if LWIP_IPV6_MLD
+/*
+ * Options and types related to IPv6 multicast membership
+ */
+#define IPV6_JOIN_GROUP      12
+#define IPV6_ADD_MEMBERSHIP  IPV6_JOIN_GROUP
+#define IPV6_LEAVE_GROUP     13
+#define IPV6_DROP_MEMBERSHIP IPV6_LEAVE_GROUP
+
+typedef struct ipv6_mreq {
+  struct in6_addr ipv6mr_multiaddr; /*  IPv6 multicast addr */
+  unsigned int    ipv6mr_interface; /*  interface index, or 0 */
+} ipv6_mreq;
+#endif /* LWIP_IPV6_MLD */
+
 /*
  * The Type of Service provides an indication of the abstract
  * parameters of the quality of service desired.  These parameters are
@@ -383,7 +409,7 @@ struct in_pktinfo {
  * we restrict parameters to at most 128 bytes.
  */
 #if !defined(FIONREAD) || !defined(FIONBIO)
-#define IOCPARM_MASK    0x7fU           /* parameters must be < 128 bytes */
+#define IOCPARM_MASK    0x7fUL          /* parameters must be < 128 bytes */
 #define IOC_VOID        0x20000000UL    /* no parameters */
 #define IOC_OUT         0x40000000UL    /* copy out parameters */
 #define IOC_IN          0x80000000UL    /* copy in parameters */
@@ -427,7 +453,7 @@ struct in_pktinfo {
 #define O_NONBLOCK  1 /* nonblocking I/O */
 #endif
 #ifndef O_NDELAY
-#define O_NDELAY    1 /* same as O_NONBLOCK, for compatibility */
+#define O_NDELAY    O_NONBLOCK /* same as O_NONBLOCK, for compatibility */
 #endif
 #ifndef O_RDONLY
 #define O_RDONLY    2
@@ -450,6 +476,7 @@ struct in_pktinfo {
 #undef  FD_SETSIZE
 /* Make FD_SETSIZE match NUM_SOCKETS in socket.c */
 #define FD_SETSIZE    MEMP_NUM_NETCONN
+#define LWIP_SELECT_MAXNFDS (FD_SETSIZE + LWIP_SOCKET_OFFSET)
 #define FDSETSAFESET(n, code) do { \
   if (((n) - LWIP_SOCKET_OFFSET < MEMP_NUM_NETCONN) && (((int)(n) - LWIP_SOCKET_OFFSET) >= 0)) { \
   code; }} while(0)
@@ -465,11 +492,34 @@ typedef struct fd_set
   unsigned char fd_bits [(FD_SETSIZE+7)/8];
 } fd_set;
 
-#elif LWIP_SOCKET_OFFSET
-#error LWIP_SOCKET_OFFSET does not work with external FD_SET!
-#elif FD_SETSIZE < MEMP_NUM_NETCONN
+#elif FD_SETSIZE < (LWIP_SOCKET_OFFSET + MEMP_NUM_NETCONN)
 #error "external FD_SETSIZE too small for number of sockets"
+#else
+#define LWIP_SELECT_MAXNFDS FD_SETSIZE
 #endif /* FD_SET */
+
+/* poll-related defines and types */
+/* @todo: find a better way to guard the definition of these defines and types if already defined */
+#if !defined(POLLIN) && !defined(POLLOUT)
+#define POLLIN     0x1
+#define POLLOUT    0x2
+#define POLLERR    0x4
+#define POLLNVAL   0x8
+/* Below values are unimplemented */
+#define POLLRDNORM 0x10
+#define POLLRDBAND 0x20
+#define POLLPRI    0x40
+#define POLLWRNORM 0x80
+#define POLLWRBAND 0x100
+#define POLLHUP    0x200
+typedef unsigned int nfds_t;
+struct pollfd
+{
+  int fd;
+  short events;
+  short revents;
+};
+#endif
 
 /** LWIP_TIMEVAL_PRIVATE: if you want to use the struct timeval provided
  * by your system, set this to 0 and include <sys/time.h> in cc.h */
@@ -483,6 +533,16 @@ struct timeval {
   long    tv_usec;        /* and microseconds */
 };
 #endif /* LWIP_TIMEVAL_PRIVATE */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LWIP_SOCKET_EXTERNAL_HEADERS */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define lwip_socket_init() /* Compatibility define, no init needed. */
 void lwip_socket_thread_init(void); /* LWIP_NETCONN_SEM_PER_THREAD==1: initialize thread-local semaphore */
@@ -507,20 +567,28 @@ void lwip_socket_thread_cleanup(void); /* LWIP_NETCONN_SEM_PER_THREAD==1: destro
 #define lwip_sendmsg      sendmsg
 #define lwip_sendto       sendto
 #define lwip_socket       socket
+#if LWIP_SOCKET_SELECT
 #define lwip_select       select
-#define lwip_ioctlsocket  ioctl
+#endif
+#if LWIP_SOCKET_POLL
+#define lwip_poll         poll
+#endif
+#define lwip_ioctl        ioctlsocket
 #define lwip_inet_ntop    inet_ntop
 #define lwip_inet_pton    inet_pton
 
 #if LWIP_POSIX_SOCKETS_IO_NAMES
 #define lwip_read         read
+#define lwip_readv        readv
 #define lwip_write        write
 #define lwip_writev       writev
 #undef lwip_close
 #define lwip_close        close
 #define closesocket(s)    close(s)
-#define lwip_fcntl        fcntl
+int fcntl(int s, int cmd, ...);
+#undef lwip_ioctl
 #define lwip_ioctl        ioctl
+#define ioctlsocket       ioctl
 #endif /* LWIP_POSIX_SOCKETS_IO_NAMES */
 #endif /* LWIP_COMPAT_SOCKETS == 2 */
 
@@ -536,6 +604,7 @@ int lwip_connect(int s, const struct sockaddr *name, socklen_t namelen);
 int lwip_listen(int s, int backlog);
 ssize_t lwip_recv(int s, void *mem, size_t len, int flags);
 ssize_t lwip_read(int s, void *mem, size_t len);
+ssize_t lwip_readv(int s, const struct iovec *iov, int iovcnt);
 ssize_t lwip_recvfrom(int s, void *mem, size_t len, int flags,
       struct sockaddr *from, socklen_t *fromlen);
 ssize_t lwip_recvmsg(int s, struct msghdr *message, int flags);
@@ -549,6 +618,9 @@ ssize_t lwip_writev(int s, const struct iovec *iov, int iovcnt);
 #if LWIP_SOCKET_SELECT
 int lwip_select(int maxfdp1, fd_set *readset, fd_set *writeset, fd_set *exceptset,
                 struct timeval *timeout);
+#endif
+#if LWIP_SOCKET_POLL
+int lwip_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 #endif
 int lwip_ioctl(int s, long cmd, void *argp);
 int lwip_fcntl(int s, int cmd, int val);
@@ -591,8 +663,14 @@ int lwip_inet_pton(int af, const char *src, void *dst);
 #define sendto(s,dataptr,size,flags,to,tolen)     lwip_sendto(s,dataptr,size,flags,to,tolen)
 /** @ingroup socket */
 #define socket(domain,type,protocol)              lwip_socket(domain,type,protocol)
+#if LWIP_SOCKET_SELECT
 /** @ingroup socket */
 #define select(maxfdp1,readset,writeset,exceptset,timeout)     lwip_select(maxfdp1,readset,writeset,exceptset,timeout)
+#endif
+#if LWIP_SOCKET_POLL
+/** @ingroup socket */
+#define poll(fds,nfds,timeout)                    lwip_poll(fds,nfds,timeout)
+#endif
 /** @ingroup socket */
 #define ioctlsocket(s,cmd,argp)                   lwip_ioctl(s,cmd,argp)
 /** @ingroup socket */
@@ -603,6 +681,8 @@ int lwip_inet_pton(int af, const char *src, void *dst);
 #if LWIP_POSIX_SOCKETS_IO_NAMES
 /** @ingroup socket */
 #define read(s,mem,len)                           lwip_read(s,mem,len)
+/** @ingroup socket */
+#define readv(s,iov,iovcnt)                       lwip_readv(s,iov,iovcnt)
 /** @ingroup socket */
 #define write(s,dataptr,len)                      lwip_write(s,dataptr,len)
 /** @ingroup socket */

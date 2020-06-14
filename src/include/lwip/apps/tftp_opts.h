@@ -11,7 +11,7 @@
  *
  */
 
-/* 
+/*
  * Redistribution and use in source and binary forms, with or without
  * modification,are permitted provided that the following conditions are met:
  *
@@ -42,6 +42,7 @@
 #define LWIP_HDR_APPS_TFTP_OPTS_H
 
 #include "lwip/opt.h"
+#include "lwip/prot/iana.h"
 
 /**
  * @defgroup tftp_opts Options
@@ -53,14 +54,14 @@
  * Enable TFTP debug messages
  */
 #if !defined TFTP_DEBUG || defined __DOXYGEN__
-#define TFTP_DEBUG            LWIP_DBG_ON
+#define TFTP_DEBUG            LWIP_DBG_OFF
 #endif
 
 /**
  * TFTP server port
  */
 #if !defined TFTP_PORT || defined __DOXYGEN__
-#define TFTP_PORT             69
+#define TFTP_PORT             LWIP_IANA_PORT_TFTP
 #endif
 
 /**
@@ -81,7 +82,7 @@
  * TFTP timer cyclic interval
  */
 #if !defined TFTP_TIMER_MSECS || defined __DOXYGEN__
-#define TFTP_TIMER_MSECS      50
+#define TFTP_TIMER_MSECS      (TFTP_TIMEOUT_MSECS / 10)
 #endif
 
 /**
@@ -95,7 +96,7 @@
  * Max. length of TFTP mode
  */
 #if !defined TFTP_MAX_MODE_LEN || defined __DOXYGEN__
-#define TFTP_MAX_MODE_LEN     7
+#define TFTP_MAX_MODE_LEN     10
 #endif
 
 /**

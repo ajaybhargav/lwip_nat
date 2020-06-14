@@ -40,6 +40,7 @@
 #include "lwip/apps/mqtt_opts.h"
 #include "lwip/err.h"
 #include "lwip/ip_addr.h"
+#include "lwip/prot/iana.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,10 +54,10 @@ struct altcp_tls_config;
 
 /** @ingroup mqtt
  * Default MQTT port (non-TLS) */
-#define MQTT_PORT     1883
+#define MQTT_PORT     LWIP_IANA_PORT_MQTT
 /** @ingroup mqtt
  * Default MQTT TLS port */
-#define MQTT_TLS_PORT 8883
+#define MQTT_TLS_PORT LWIP_IANA_PORT_SECURE_MQTT
 
 /*---------------------------------------------------------------------------------------------- */
 /* Connection with server */
@@ -115,7 +116,7 @@ typedef enum
  * @ingroup mqtt
  * Function prototype for mqtt connection status callback. Called when
  * client has connected to the server after initiating a mqtt connection attempt by
- * calling mqtt_connect() or when connection is closed by server or an error
+ * calling mqtt_client_connect() or when connection is closed by server or an error
  *
  * @param client MQTT client itself
  * @param arg Additional argument to pass to the callback function
@@ -133,7 +134,7 @@ enum {
   MQTT_DATA_FLAG_LAST = 1
 };
 
-/** 
+/**
  * @ingroup mqtt
  * Function prototype for MQTT incoming publish data callback function. Called when data
  * arrives to a subscribed topic @see mqtt_subscribe
@@ -148,7 +149,7 @@ enum {
 typedef void (*mqtt_incoming_data_cb_t)(void *arg, const u8_t *data, u16_t len, u8_t flags);
 
 
-/** 
+/**
  * @ingroup mqtt
  * Function prototype for MQTT incoming publish function. Called when an incoming publish
  * arrives to a subscribed topic @see mqtt_subscribe
@@ -172,24 +173,19 @@ typedef void (*mqtt_incoming_publish_cb_t)(void *arg, const char *topic, u32_t t
 typedef void (*mqtt_request_cb_t)(void *arg, err_t err);
 
 
-/** Connect to server */
 err_t mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ipaddr, u16_t port, mqtt_connection_cb_t cb, void *arg,
                    const struct mqtt_connect_client_info_t *client_info);
 
-/** Disconnect from server */
 void mqtt_disconnect(mqtt_client_t *client);
 
-/** Create new client */
 mqtt_client_t *mqtt_client_new(void);
+void mqtt_client_free(mqtt_client_t* client);
 
-/** Check connection status */
 u8_t mqtt_client_is_connected(mqtt_client_t *client);
 
-/** Set callback to call for incoming publish */
 void mqtt_set_inpub_callback(mqtt_client_t *client, mqtt_incoming_publish_cb_t,
                              mqtt_incoming_data_cb_t data_cb, void *arg);
 
-/** Common function for subscribe and unsubscribe */
 err_t mqtt_sub_unsub(mqtt_client_t *client, const char *topic, u8_t qos, mqtt_request_cb_t cb, void *arg, u8_t sub);
 
 /** @ingroup mqtt
@@ -199,8 +195,6 @@ err_t mqtt_sub_unsub(mqtt_client_t *client, const char *topic, u8_t qos, mqtt_re
  *  Unsubscribe to topic */
 #define mqtt_unsubscribe(client, topic, cb, arg) mqtt_sub_unsub(client, topic, 0, cb, arg, 0)
 
-
-/** Publish data to topic */
 err_t mqtt_publish(mqtt_client_t *client, const char *topic, const void *payload, u16_t payload_length, u8_t qos, u8_t retain,
                                     mqtt_request_cb_t cb, void *arg);
 

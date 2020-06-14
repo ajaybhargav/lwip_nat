@@ -212,6 +212,22 @@
 #if !defined SYS_LIGHTWEIGHT_PROT || defined __DOXYGEN__
 #define SYS_LIGHTWEIGHT_PROT            1
 #endif
+
+/**
+ * Macro/function to check whether lwIP's threading/locking
+ * requirements are satisfied during current function call.
+ * This macro usually calls a function that is implemented in the OS-dependent
+ * sys layer and performs the following checks:
+ * - Not in ISR (this should be checked for NO_SYS==1, too!)
+ * - If @ref LWIP_TCPIP_CORE_LOCKING = 1: TCPIP core lock is held
+ * - If @ref LWIP_TCPIP_CORE_LOCKING = 0: function is called from TCPIP thread
+ * @see @ref multithreading
+ */
+#if !defined LWIP_ASSERT_CORE_LOCKED || defined __DOXYGEN__
+#define LWIP_ASSERT_CORE_LOCKED()
+#endif
+
+
 /**
  * @}
  */
@@ -254,7 +270,7 @@
  * default values in pcbs struct are well initialized in all conditions.
  */
 #if !defined MEMP_MEM_INIT || defined __DOXYGEN__
-#define MEMP_MEM_INIT                 0
+#define MEMP_MEM_INIT                   0
 #endif
 
 /**
@@ -293,6 +309,27 @@
  */
 #if !defined MEMP_SANITY_CHECK || defined __DOXYGEN__
 #define MEMP_SANITY_CHECK               0
+#endif
+
+/**
+ * MEM_OVERFLOW_CHECK: mem overflow protection reserves a configurable
+ * amount of bytes before and after each heap allocation chunk and fills
+ * it with a prominent default value.
+ *    MEM_OVERFLOW_CHECK == 0 no checking
+ *    MEM_OVERFLOW_CHECK == 1 checks each element when it is freed
+ *    MEM_OVERFLOW_CHECK >= 2 checks all heap elements every time
+ *      mem_malloc() or mem_free() is called (useful but slow!)
+ */
+#if !defined MEM_OVERFLOW_CHECK || defined __DOXYGEN__
+#define MEM_OVERFLOW_CHECK              0
+#endif
+
+/**
+ * MEM_SANITY_CHECK==1: run a sanity check after each mem_free() to make
+ * sure that the linked list of heap elements is not corrupted.
+ */
+#if !defined MEM_SANITY_CHECK || defined __DOXYGEN__
+#define MEM_SANITY_CHECK                0
 #endif
 
 /**
@@ -461,7 +498,7 @@
  * The number of sys timeouts used by the core stack (not apps)
  * The default number of timeouts is calculated here for all enabled modules.
  */
-#define LWIP_NUM_SYS_TIMEOUT_INTERNAL   (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + PPP_NUM_TIMEOUTS + (LWIP_IPV6 * (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD)))
+#define LWIP_NUM_SYS_TIMEOUT_INTERNAL   (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_ACD + LWIP_IGMP + LWIP_DNS + PPP_NUM_TIMEOUTS + (LWIP_IPV6 * (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD + LWIP_IPV6_DHCP6)))
 
 /**
  * MEMP_NUM_SYS_TIMEOUT: the number of simultaneously active timeouts.
@@ -486,6 +523,15 @@
  */
 #if !defined MEMP_NUM_NETCONN || defined __DOXYGEN__
 #define MEMP_NUM_NETCONN                4
+#endif
+
+/**
+ * MEMP_NUM_SELECT_CB: the number of struct lwip_select_cb.
+ * (Only needed if you have LWIP_MPU_COMPATIBLE==1 and use the socket API.
+ * In that case, you need one per thread calling lwip_select.)
+ */
+#if !defined MEMP_NUM_SELECT_CB || defined __DOXYGEN__
+#define MEMP_NUM_SELECT_CB              4
 #endif
 
 /**
@@ -624,6 +670,18 @@
 #define ETHARP_SUPPORT_VLAN             0
 #endif
 
+/**
+ * LWIP_VLAN_PCP==1: Enable outgoing VLAN taggning of frames on a per-PCB basis
+ * for QoS purposes. With this feature enabled, each PCB has a new variable: "tci".
+ * (Tag Control Identifier). The TCI contains three fields: VID, CFI and PCP.
+ * VID is the VLAN ID, which should be set to zero.
+ * The "CFI" bit is used to enable or disable VLAN tags for the PCB.
+ * PCP (Priority Code Point) is a 3 bit field used for Ethernet level QoS.
+ */
+#ifndef LWIP_VLAN_PCP
+#define LWIP_VLAN_PCP                   0
+#endif
+
 /** LWIP_ETHERNET==1: enable ethernet support even though ARP might be disabled
  */
 #if !defined LWIP_ETHERNET || defined __DOXYGEN__
@@ -737,7 +795,7 @@
  * in this time, the whole packet is discarded.
  */
 #if !defined IP_REASS_MAXAGE || defined __DOXYGEN__
-#define IP_REASS_MAXAGE                 3
+#define IP_REASS_MAXAGE                 15
 #endif
 
 /**
@@ -745,6 +803,8 @@
  * Since the received pbufs are enqueued, be sure to configure
  * PBUF_POOL_SIZE > IP_REASS_MAX_PBUFS so that the stack is still able to receive
  * packets even if the maximum amount of fragments is enqueued for reassembly!
+ * When IPv4 *and* IPv6 are enabled, this even changes to
+ * (PBUF_POOL_SIZE > 2 * IP_REASS_MAX_PBUFS)!
  */
 #if !defined IP_REASS_MAX_PBUFS || defined __DOXYGEN__
 #define IP_REASS_MAX_PBUFS              10
@@ -810,7 +870,7 @@
  * ICMP_TTL: Default value for Time-To-Live used by ICMP packets.
  */
 #if !defined ICMP_TTL || defined __DOXYGEN__
-#define ICMP_TTL                       (IP_DEFAULT_TTL)
+#define ICMP_TTL                        IP_DEFAULT_TTL
 #endif
 
 /**
@@ -851,7 +911,7 @@
  * LWIP_RAW==1: Enable application layer to hook into the IP layer itself.
  */
 #if !defined RAW_TTL || defined __DOXYGEN__
-#define RAW_TTL                        (IP_DEFAULT_TTL)
+#define RAW_TTL                         IP_DEFAULT_TTL
 #endif
 /**
  * @}
@@ -880,20 +940,10 @@
 #endif /* !LWIP_IPV4 */
 
 /**
- * DHCP_DOES_ARP_CHECK==1: Do an ARP check on the offered address.
+ * LWIP_DHCP_DOES_ACD_CHECK==1: Perform address conflict detection on the dhcp address.
  */
-#if !defined DHCP_DOES_ARP_CHECK || defined __DOXYGEN__
-#define DHCP_DOES_ARP_CHECK             ((LWIP_DHCP) && (LWIP_ARP))
-#endif
-
-/**
- * LWIP_DHCP_CHECK_LINK_UP==1: dhcp_start() only really starts if the netif has
- * NETIF_FLAG_LINK_UP set in its flags. As this is only an optimization and
- * netif drivers might not set this flag, the default is off. If enabled,
- * netif_set_link_up() must be called to continue dhcp starting.
- */
-#if !defined LWIP_DHCP_CHECK_LINK_UP
-#define LWIP_DHCP_CHECK_LINK_UP         0
+#if !defined LWIP_DHCP_DOES_ACD_CHECK || defined __DOXYGEN__
+#define LWIP_DHCP_DOES_ACD_CHECK        LWIP_DHCP
 #endif
 
 /**
@@ -921,7 +971,7 @@
 
 /**
  * LWIP_DHCP_MAX_DNS_SERVERS > 0: Request DNS servers with discover/select.
- * DHCP servers received in the response are passed to DNS via @ref dns_setserver()
+ * DNS servers received in the response are passed to DNS via @ref dns_setserver()
  * (up to the maximum limit defined here).
  */
 #if !defined LWIP_DHCP_MAX_DNS_SERVERS || defined __DOXYGEN__
@@ -971,6 +1021,31 @@
 #if !defined LWIP_DHCP_AUTOIP_COOP_TRIES || defined __DOXYGEN__
 #define LWIP_DHCP_AUTOIP_COOP_TRIES     9
 #endif
+/**
+ * @}
+ */
+
+/*
+   ------------------------------------
+   ----------- ACD options ------------
+   ------------------------------------
+*/
+/**
+ * @defgroup lwip_opts_acd ACD
+ * @ingroup lwip_opts_ipv4
+ * @{
+ */
+ /**
+  * LWIP_ACD==1: Enable ACD module. ACD module is needed when using AUTOIP.
+  */
+#if !defined LWIP_ACD || defined __DOXYGEN__
+#define LWIP_ACD                     (LWIP_AUTOIP || LWIP_DHCP_DOES_ACD_CHECK)
+#endif
+#if !LWIP_IPV4
+/* disable ACD when IPv4 is disabled */
+#undef LWIP_ACD
+#define LWIP_ACD                     0
+#endif /* !LWIP_IPV4 */
 /**
  * @}
  */
@@ -1079,6 +1154,11 @@
 #define DNS_MAX_SERVERS                 2
 #endif
 
+/** DNS maximum number of retries when asking for a name, before "timeout". */
+#if !defined DNS_MAX_RETRIES || defined __DOXYGEN__
+#define DNS_MAX_RETRIES                 4
+#endif
+
 /** DNS do a name checking between the query and the response. */
 #if !defined DNS_DOES_NAME_CHECK || defined __DOXYGEN__
 #define DNS_DOES_NAME_CHECK             1
@@ -1102,7 +1182,9 @@
  *                                    DNS_LOCAL_HOSTLIST_ELEM("host_ip6", IPADDR6_INIT_HOST(123, 234, 345, 456)}
  *
  *  Instead, you can also use an external function:
- *  \#define DNS_LOOKUP_LOCAL_EXTERN(x) extern err_t my_lookup_function(const char *name, ip_addr_t *addr, u8_t dns_addrtype)
+ *  \#define DNS_LOOKUP_LOCAL_EXTERN(name, namelen, addr, dns_addrtype) my_lookup_function(name, namelen, addr, dns_addrtype)
+ *  with function signature:
+ *  extern err_t my_lookup_function(const char *name, size_t namelen, ip_addr_t *addr, u8_t dns_addrtype)
  *  that looks up the IP address and returns ERR_OK if found (LWIP_DNS_ADDRTYPE_xxx is passed in dns_addrtype).
  */
 #if !defined DNS_LOCAL_HOSTLIST || defined __DOXYGEN__
@@ -1118,7 +1200,7 @@
 /** Set this to 1 to enable querying ".local" names via mDNS
  *  using a One-Shot Multicast DNS Query */
 #if !defined LWIP_DNS_SUPPORT_MDNS_QUERIES || defined __DOXYGEN__
-#define LWIP_DNS_SUPPORT_MDNS_QUERIES  0
+#define LWIP_DNS_SUPPORT_MDNS_QUERIES   0
 #endif
 /**
  * @}
@@ -1152,7 +1234,7 @@
  * UDP_TTL: Default Time-To-Live value.
  */
 #if !defined UDP_TTL || defined __DOXYGEN__
-#define UDP_TTL                         (IP_DEFAULT_TTL)
+#define UDP_TTL                         IP_DEFAULT_TTL
 #endif
 
 /**
@@ -1186,7 +1268,7 @@
  * TCP_TTL: Default Time-To-Live value.
  */
 #if !defined TCP_TTL || defined __DOXYGEN__
-#define TCP_TTL                         (IP_DEFAULT_TTL)
+#define TCP_TTL                         IP_DEFAULT_TTL
 #endif
 
 /**
@@ -1219,7 +1301,7 @@
  * Define to 0 if your device is low on memory.
  */
 #if !defined TCP_QUEUE_OOSEQ || defined __DOXYGEN__
-#define TCP_QUEUE_OOSEQ                 (LWIP_TCP)
+#define TCP_QUEUE_OOSEQ                 LWIP_TCP
 #endif
 
 /**
@@ -1302,19 +1384,49 @@
 #endif
 
 /**
- * TCP_OOSEQ_MAX_BYTES: The maximum number of bytes queued on ooseq per pcb.
- * Default is 0 (no limit). Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_MAX_BYTES: The default maximum number of bytes queued on ooseq per
+ * pcb if TCP_OOSEQ_BYTES_LIMIT is not defined. Default is 0 (no limit).
+ * Only valid for TCP_QUEUE_OOSEQ==1.
  */
 #if !defined TCP_OOSEQ_MAX_BYTES || defined __DOXYGEN__
 #define TCP_OOSEQ_MAX_BYTES             0
 #endif
 
 /**
- * TCP_OOSEQ_MAX_PBUFS: The maximum number of pbufs queued on ooseq per pcb.
- * Default is 0 (no limit). Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_BYTES_LIMIT(pcb): Return the maximum number of bytes to be queued
+ * on ooseq per pcb, given the pcb. Only valid for TCP_QUEUE_OOSEQ==1 &&
+ * TCP_OOSEQ_MAX_BYTES==1.
+ * Use this to override TCP_OOSEQ_MAX_BYTES to a dynamic value per pcb.
+ */
+#if !defined TCP_OOSEQ_BYTES_LIMIT
+#if TCP_OOSEQ_MAX_BYTES
+#define TCP_OOSEQ_BYTES_LIMIT(pcb)      TCP_OOSEQ_MAX_BYTES
+#elif defined __DOXYGEN__
+#define TCP_OOSEQ_BYTES_LIMIT(pcb)
+#endif
+#endif
+
+/**
+ * TCP_OOSEQ_MAX_PBUFS: The default maximum number of pbufs queued on ooseq per
+ * pcb if TCP_OOSEQ_BYTES_LIMIT is not defined. Default is 0 (no limit).
+ * Only valid for TCP_QUEUE_OOSEQ==1.
  */
 #if !defined TCP_OOSEQ_MAX_PBUFS || defined __DOXYGEN__
 #define TCP_OOSEQ_MAX_PBUFS             0
+#endif
+
+/**
+ * TCP_OOSEQ_PBUFS_LIMIT(pcb): Return the maximum number of pbufs to be queued
+ * on ooseq per pcb, given the pcb.  Only valid for TCP_QUEUE_OOSEQ==1 &&
+ * TCP_OOSEQ_MAX_PBUFS==1.
+ * Use this to override TCP_OOSEQ_MAX_PBUFS to a dynamic value per pcb.
+ */
+#if !defined TCP_OOSEQ_PBUFS_LIMIT
+#if TCP_OOSEQ_MAX_PBUFS
+#define TCP_OOSEQ_PBUFS_LIMIT(pcb)      TCP_OOSEQ_MAX_PBUFS
+#elif defined __DOXYGEN__
+#define TCP_OOSEQ_PBUFS_LIMIT(pcb)
+#endif
 #endif
 
 /**
@@ -1366,7 +1478,7 @@
  * explicit window update
  */
 #if !defined TCP_WND_UPDATE_THRESHOLD || defined __DOXYGEN__
-#define TCP_WND_UPDATE_THRESHOLD   LWIP_MIN((TCP_WND / 4), (TCP_MSS * 4))
+#define TCP_WND_UPDATE_THRESHOLD        LWIP_MIN((TCP_WND / 4), (TCP_MSS * 4))
 #endif
 
 /**
@@ -1401,15 +1513,28 @@
 #define TCP_RCV_SCALE                   0
 #endif
 
-/** LWIP_ALTCP==1: enable the altcp API
+/**
+ * LWIP_TCP_PCB_NUM_EXT_ARGS:
+ * When this is > 0, every tcp pcb (including listen pcb) includes a number of
+ * additional argument entries in an array (see tcp_ext_arg_alloc_id)
+ */
+#if !defined LWIP_TCP_PCB_NUM_EXT_ARGS || defined __DOXYGEN__
+#define LWIP_TCP_PCB_NUM_EXT_ARGS       0
+#endif
+
+/** LWIP_ALTCP==1: enable the altcp API.
  * altcp is an abstraction layer that prevents applications linking against the
  * tcp.h functions but provides the same functionality. It is used to e.g. add
  * SSL/TLS or proxy-connect support to an application written for the tcp callback
  * API without that application knowing the protocol details.
- * Applications written against the altcp API are directly linked against the
- * tcp callback API for LWIP_ALTCP==0, but then cannot use layered protocols.
+ *
+ * With LWIP_ALTCP==0, applications written against the altcp API can still be
+ * compiled but are directly linked against the tcp.h callback API and then
+ * cannot use layered protocols.
+ *
+ * See @ref altcp_api
  */
-#ifndef LWIP_ALTCP
+#if !defined LWIP_ALTCP || defined __DOXYGEN__
 #define LWIP_ALTCP                      0
 #endif
 
@@ -1418,7 +1543,7 @@
  * A port to ARM mbedtls is provided with lwIP, see apps/altcp_tls/ directory
  * and LWIP_ALTCP_TLS_MBEDTLS option.
  */
-#ifndef LWIP_ALTCP_TLS
+#if !defined LWIP_ALTCP_TLS || defined __DOXYGEN__
 #define LWIP_ALTCP_TLS                  0
 #endif
 
@@ -1441,13 +1566,13 @@
  * link level header. The default is 14, the standard value for
  * Ethernet.
  */
-#if !defined PBUF_LINK_HLEN || defined __DOXYGEN__
-#if defined LWIP_HOOK_VLAN_SET && !defined __DOXYGEN__
-#define PBUF_LINK_HLEN                  (18 + ETH_PAD_SIZE)
-#else /* LWIP_HOOK_VLAN_SET */
-#define PBUF_LINK_HLEN                  (14 + ETH_PAD_SIZE)
-#endif /* LWIP_HOOK_VLAN_SET */
-#endif
+ #if !defined PBUF_LINK_HLEN || defined __DOXYGEN__
+#if (defined LWIP_HOOK_VLAN_SET || LWIP_VLAN_PCP) && !defined __DOXYGEN__
+ #define PBUF_LINK_HLEN                  (18 + ETH_PAD_SIZE)
+#else /* LWIP_HOOK_VLAN_SET || LWIP_VLAN_PCP */
+ #define PBUF_LINK_HLEN                  (14 + ETH_PAD_SIZE)
+#endif /* LWIP_HOOK_VLAN_SET || LWIP_VLAN_PCP */
+ #endif
 
 /**
  * PBUF_LINK_ENCAPSULATION_HLEN: the number of bytes that should be allocated
@@ -1463,15 +1588,23 @@
  * TCP_MSS, IP header, and link header.
  */
 #if !defined PBUF_POOL_BUFSIZE || defined __DOXYGEN__
-#define PBUF_POOL_BUFSIZE               LWIP_MEM_ALIGN_SIZE(TCP_MSS+40+PBUF_LINK_ENCAPSULATION_HLEN+PBUF_LINK_HLEN)
+#define PBUF_POOL_BUFSIZE               LWIP_MEM_ALIGN_SIZE(TCP_MSS+PBUF_IP_HLEN+PBUF_TRANSPORT_HLEN+PBUF_LINK_ENCAPSULATION_HLEN+PBUF_LINK_HLEN)
 #endif
 
 /**
  * LWIP_PBUF_REF_T: Refcount type in pbuf.
  * Default width of u8_t can be increased if 255 refs are not enough for you.
  */
-#ifndef LWIP_PBUF_REF_T
-#define LWIP_PBUF_REF_T u8_t
+#if !defined LWIP_PBUF_REF_T || defined __DOXYGEN__
+#define LWIP_PBUF_REF_T                 u8_t
+#endif
+
+/**
+ * LWIP_PBUF_CUSTOM_DATA: Store private data on pbufs (e.g. timestamps)
+ * This extends struct pbuf so user can store custom data on every pbuf.
+ */
+#if !defined LWIP_PBUF_CUSTOM_DATA || defined __DOXYGEN__
+#define LWIP_PBUF_CUSTOM_DATA
 #endif
 /**
  * @}
@@ -1519,7 +1652,7 @@
 #endif
 
 /**
- * LWIP_NETIF_EXT_STATUS_CALLBACK==1: Support an extended callback function 
+ * LWIP_NETIF_EXT_STATUS_CALLBACK==1: Support an extended callback function
  * for several netif related event that supports multiple subscribers.
  * @see netif_ext_status_callback
  */
@@ -1573,7 +1706,7 @@
  *   }
  */
 #if !defined LWIP_NETIF_TX_SINGLE_PBUF || defined __DOXYGEN__
-#define LWIP_NETIF_TX_SINGLE_PBUF             0
+#define LWIP_NETIF_TX_SINGLE_PBUF       0
 #endif /* LWIP_NETIF_TX_SINGLE_PBUF */
 
 /**
@@ -1581,7 +1714,7 @@
  * data in client_data member array of struct netif (max. 256).
  */
 #if !defined LWIP_NUM_NETIF_CLIENT_DATA || defined __DOXYGEN__
-#define LWIP_NUM_NETIF_CLIENT_DATA            0
+#define LWIP_NUM_NETIF_CLIENT_DATA      0
 #endif
 /**
  * @}
@@ -1610,7 +1743,7 @@
  * LWIP_LOOPIF_MULTICAST==1: Support multicast/IGMP on loop interface (127.0.0.1).
  */
 #if !defined LWIP_LOOPIF_MULTICAST || defined __DOXYGEN__
-#define LWIP_LOOPIF_MULTICAST               0
+#define LWIP_LOOPIF_MULTICAST           0
 #endif
 
 /**
@@ -1663,7 +1796,7 @@
  * TCPIP_THREAD_NAME: The name assigned to the main tcpip thread.
  */
 #if !defined TCPIP_THREAD_NAME || defined __DOXYGEN__
-#define TCPIP_THREAD_NAME              "tcpip_thread"
+#define TCPIP_THREAD_NAME               "tcpip_thread"
 #endif
 
 /**
@@ -1705,7 +1838,7 @@
  * SLIPIF_THREAD_NAME: The name assigned to the slipif_loop thread.
  */
 #if !defined SLIPIF_THREAD_NAME || defined __DOXYGEN__
-#define SLIPIF_THREAD_NAME             "slipif_loop"
+#define SLIPIF_THREAD_NAME              "slipif_loop"
 #endif
 
 /**
@@ -1730,7 +1863,7 @@
  * DEFAULT_THREAD_NAME: The name assigned to any other lwIP thread.
  */
 #if !defined DEFAULT_THREAD_NAME || defined __DOXYGEN__
-#define DEFAULT_THREAD_NAME            "lwIP"
+#define DEFAULT_THREAD_NAME             "lwIP"
 #endif
 
 /**
@@ -1830,11 +1963,8 @@
 
 /** LWIP_NETCONN_FULLDUPLEX==1: Enable code that allows reading from one thread,
  * writing from a 2nd thread and closing from a 3rd thread at the same time.
- * ATTENTION: This is currently really alpha! Some requirements:
- * - LWIP_NETCONN_SEM_PER_THREAD==1 is required to use one socket/netconn from
- *   multiple threads at once
- * - sys_mbox_free() has to unblock receive tasks waiting on recvmbox/acceptmbox
- *   and prevent a task pending on this during/after deletion
+ * LWIP_NETCONN_SEM_PER_THREAD==1 is required to use one socket/netconn from
+ * multiple threads at once!
  */
 #if !defined LWIP_NETCONN_FULLDUPLEX || defined __DOXYGEN__
 #define LWIP_NETCONN_FULLDUPLEX         0
@@ -1888,6 +2018,17 @@
  */
 #if !defined LWIP_SOCKET_OFFSET || defined __DOXYGEN__
 #define LWIP_SOCKET_OFFSET              0
+#endif
+
+/**
+ * LWIP_SOCKET_EXTERNAL_HEADERS==1: Use external headers instead of sockets.h
+ * and inet.h. In this case, user must provide its own headers by setting the
+ * values for LWIP_SOCKET_EXTERNAL_HEADER_SOCKETS_H and
+ * LWIP_SOCKET_EXTERNAL_HEADER_INET_H to appropriate include file names and the
+ * whole content of the default sockets.h and inet.h is skipped.
+ */
+#if !defined LWIP_SOCKET_EXTERNAL_HEADERS || defined __DOXYGEN__
+#define LWIP_SOCKET_EXTERNAL_HEADERS    0
 #endif
 
 /**
@@ -1987,6 +2128,14 @@
  */
 #if !defined LWIP_SOCKET_SELECT || defined __DOXYGEN__
 #define LWIP_SOCKET_SELECT              1
+#endif
+
+/**
+ * LWIP_SOCKET_POLL==1 (default): enable poll() for sockets (including
+ * struct pollfd, nfds_t, and constants)
+ */
+#if !defined LWIP_SOCKET_POLL || defined __DOXYGEN__
+#define LWIP_SOCKET_POLL                1
 #endif
 /**
  * @}
@@ -2284,9 +2433,30 @@
 #endif
 
 /**
+ * IPV6_REASS_MAXAGE: Maximum time (in multiples of IP6_REASS_TMR_INTERVAL - so seconds, normally)
+ * a fragmented IP packet waits for all fragments to arrive. If not all fragments arrived
+ * in this time, the whole packet is discarded.
+ */
+#if !defined IPV6_REASS_MAXAGE || defined __DOXYGEN__
+#define IPV6_REASS_MAXAGE               60
+#endif
+
+/**
  * LWIP_IPV6_SCOPES==1: Enable support for IPv6 address scopes, ensuring that
  * e.g. link-local addresses are really treated as link-local. Disable this
  * setting only for single-interface configurations.
+ * All addresses that have a scope according to the default policy (link-local
+ * unicast addresses, interface-local and link-local multicast addresses) should
+ * now have a zone set on them before being passed to the core API, although
+ * lwIP will currently attempt to select a zone on the caller's behalf when
+ * necessary. Applications that directly assign IPv6 addresses to interfaces
+ * (which is NOT recommended) must now ensure that link-local addresses carry
+ * the netif's zone. See the new ip6_zone.h header file for more information and
+ * relevant macros. For now it is still possible to turn off scopes support
+ * through the new LWIP_IPV6_SCOPES option. When upgrading an implementation that
+ * uses the core API directly, it is highly recommended to enable
+ * LWIP_IPV6_SCOPES_DEBUG at least for a while, to ensure e.g. proper address
+ * initialization.
  */
 #if !defined LWIP_IPV6_SCOPES || defined __DOXYGEN__
 #define LWIP_IPV6_SCOPES                (LWIP_IPV6 && !LWIP_SINGLE_NETIF)
@@ -2320,14 +2490,14 @@
  * LWIP_IPV6_FRAG==1: Fragment outgoing IPv6 packets that are too big.
  */
 #if !defined LWIP_IPV6_FRAG || defined __DOXYGEN__
-#define LWIP_IPV6_FRAG                  0
+#define LWIP_IPV6_FRAG                  1
 #endif
 
 /**
  * LWIP_IPV6_REASS==1: reassemble incoming IPv6 packets that fragmented
  */
 #if !defined LWIP_IPV6_REASS || defined __DOXYGEN__
-#define LWIP_IPV6_REASS                 (LWIP_IPV6)
+#define LWIP_IPV6_REASS                 LWIP_IPV6
 #endif
 
 /**
@@ -2335,14 +2505,14 @@
  * network startup.
  */
 #if !defined LWIP_IPV6_SEND_ROUTER_SOLICIT || defined __DOXYGEN__
-#define LWIP_IPV6_SEND_ROUTER_SOLICIT   1
+#define LWIP_IPV6_SEND_ROUTER_SOLICIT   LWIP_IPV6
 #endif
 
 /**
  * LWIP_IPV6_AUTOCONFIG==1: Enable stateless address autoconfiguration as per RFC 4862.
  */
 #if !defined LWIP_IPV6_AUTOCONFIG || defined __DOXYGEN__
-#define LWIP_IPV6_AUTOCONFIG            (LWIP_IPV6)
+#define LWIP_IPV6_AUTOCONFIG            LWIP_IPV6
 #endif
 
 /**
@@ -2353,7 +2523,7 @@
  * If this option is disabled, all addresses are assumed to be static.
  */
 #if !defined LWIP_IPV6_ADDRESS_LIFETIMES || defined __DOXYGEN__
-#define LWIP_IPV6_ADDRESS_LIFETIMES     (LWIP_IPV6_AUTOCONFIG)
+#define LWIP_IPV6_ADDRESS_LIFETIMES     LWIP_IPV6_AUTOCONFIG
 #endif
 
 /**
@@ -2375,15 +2545,17 @@
  * LWIP_ICMP6==1: Enable ICMPv6 (mandatory per RFC)
  */
 #if !defined LWIP_ICMP6 || defined __DOXYGEN__
-#define LWIP_ICMP6                      (LWIP_IPV6)
+#define LWIP_ICMP6                      LWIP_IPV6
 #endif
 
 /**
  * LWIP_ICMP6_DATASIZE: bytes from original packet to send back in
- * ICMPv6 error messages.
+ * ICMPv6 error messages (0 = default of IP6_MIN_MTU_LENGTH)
+ * ATTENTION: RFC4443 section 2.4 says IP6_MIN_MTU_LENGTH is a MUST,
+ * so override this only if you absolutely have to!
  */
 #if !defined LWIP_ICMP6_DATASIZE || defined __DOXYGEN__
-#define LWIP_ICMP6_DATASIZE             8
+#define LWIP_ICMP6_DATASIZE             0
 #endif
 
 /**
@@ -2407,7 +2579,7 @@
  * indiscriminately pass all inbound IPv6 multicast traffic to lwIP.
  */
 #if !defined LWIP_IPV6_MLD || defined __DOXYGEN__
-#define LWIP_IPV6_MLD                   (LWIP_IPV6)
+#define LWIP_IPV6_MLD                   LWIP_IPV6
 #endif
 
 /**
@@ -2433,7 +2605,7 @@
  * is being resolved.
  */
 #if !defined LWIP_ND6_QUEUEING || defined __DOXYGEN__
-#define LWIP_ND6_QUEUEING               (LWIP_IPV6)
+#define LWIP_ND6_QUEUEING               LWIP_IPV6
 #endif
 
 /**
@@ -2554,11 +2726,59 @@
  */
 
 /**
- * LWIP_IPV6_DHCP6==1: enable DHCPv6 stateful address autoconfiguration.
+ * @defgroup lwip_opts_dhcpv6 DHCPv6
+ * @ingroup lwip_opts_ipv6
+ * @{
+ */
+/**
+ * LWIP_IPV6_DHCP6==1: enable DHCPv6 stateful/stateless address autoconfiguration.
  */
 #if !defined LWIP_IPV6_DHCP6 || defined __DOXYGEN__
 #define LWIP_IPV6_DHCP6                 0
 #endif
+
+/**
+ * LWIP_IPV6_DHCP6_STATEFUL==1: enable DHCPv6 stateful address autoconfiguration.
+ * (not supported, yet!)
+ */
+#if !defined LWIP_IPV6_DHCP6_STATEFUL || defined __DOXYGEN__
+#define LWIP_IPV6_DHCP6_STATEFUL        0
+#endif
+
+/**
+ * LWIP_IPV6_DHCP6_STATELESS==1: enable DHCPv6 stateless address autoconfiguration.
+ */
+#if !defined LWIP_IPV6_DHCP6_STATELESS || defined __DOXYGEN__
+#define LWIP_IPV6_DHCP6_STATELESS       LWIP_IPV6_DHCP6
+#endif
+
+/**
+ * LWIP_DHCP6_GETS_NTP==1: Request NTP servers via DHCPv6. For each
+ * response packet, a callback is called, which has to be provided by the port:
+ * void dhcp6_set_ntp_servers(u8_t num_ntp_servers, ip_addr_t* ntp_server_addrs);
+*/
+#if !defined LWIP_DHCP6_GET_NTP_SRV || defined __DOXYGEN__
+#define LWIP_DHCP6_GET_NTP_SRV          0
+#endif
+
+/**
+ * The maximum of NTP servers requested
+ */
+#if !defined LWIP_DHCP6_MAX_NTP_SERVERS || defined __DOXYGEN__
+#define LWIP_DHCP6_MAX_NTP_SERVERS      1
+#endif
+
+/**
+ * LWIP_DHCP6_MAX_DNS_SERVERS > 0: Request DNS servers via DHCPv6.
+ * DNS servers received in the response are passed to DNS via @ref dns_setserver()
+ * (up to the maximum limit defined here).
+ */
+#if !defined LWIP_DHCP6_MAX_DNS_SERVERS || defined __DOXYGEN__
+#define LWIP_DHCP6_MAX_DNS_SERVERS      DNS_MAX_SERVERS
+#endif
+/**
+ * @}
+ */
 
 /*
    ---------------------------------------
@@ -2590,14 +2810,16 @@
  * the standardized ISN generation algorithm from RFC 6528 (see contrib/adons/tcp_isn),
  * or any other desired algorithm as a replacement.
  * Called from tcp_connect() and tcp_listen_input() when an ISN is needed for
- * a new TCP connection, if TCP support (@ref LWIP_TCP) is enabled.\n
- * Signature: u32_t my_hook_tcp_isn(const ip_addr_t* local_ip, u16_t local_port, const ip_addr_t* remote_ip, u16_t remote_port);
- * - it may be necessary to use "struct ip_addr" (ip4_addr, ip6_addr) instead of "ip_addr_t" in function declarations\n
+ * a new TCP connection, if TCP support (@ref LWIP_TCP) is enabled.<br>
+ * Signature:\code{.c}
+ * u32_t my_hook_tcp_isn(const ip_addr_t* local_ip, u16_t local_port, const ip_addr_t* remote_ip, u16_t remote_port);
+ * \endcode
+ * - it may be necessary to use "struct ip_addr" (ip4_addr, ip6_addr) instead of "ip_addr_t" in function declarations<br>
  * Arguments:
  * - local_ip: pointer to the local IP address of the connection
  * - local_port: local port number of the connection (host-byte order)
  * - remote_ip: pointer to the remote IP address of the connection
- * - remote_port: remote port number of the connection (host-byte order)\n
+ * - remote_port: remote port number of the connection (host-byte order)<br>
  * Return value:
  * - the 32-bit Initial Sequence Number to use for the new TCP connection.
  */
@@ -2606,8 +2828,88 @@
 #endif
 
 /**
+ * LWIP_HOOK_TCP_INPACKET_PCB:
+ * Hook for intercepting incoming packets before they are passed to a pcb. This
+ * allows updating some state or even dropping a packet.
+ * Signature:\code{.c}
+ * err_t my_hook_tcp_inpkt(struct tcp_pcb *pcb, struct tcp_hdr *hdr, u16_t optlen, u16_t opt1len, u8_t *opt2, struct pbuf *p);
+ * \endcode
+ * Arguments:
+ * - pcb: tcp_pcb selected for input of this packet (ATTENTION: this may be
+ *        struct tcp_pcb_listen if pcb->state == LISTEN)
+ * - hdr: pointer to tcp header (ATTENTION: tcp options may not be in one piece!)
+ * - optlen: tcp option length
+ * - opt1len: tcp option length 1st part
+ * - opt2: if this is != NULL, tcp options are split among 2 pbufs. In that case,
+ *         options start at right after the tcp header ('(u8_t*)(hdr + 1)') for
+ *         the first 'opt1len' bytes and the rest starts at 'opt2'. opt2len can
+ *         be simply calculated: 'opt2len = optlen - opt1len;'
+ * - p: input packet, p->payload points to application data (that's why tcp hdr
+ *      and options are passed in separately)
+ * Return value:
+ * - ERR_OK: continue input of this packet as normal
+ * - != ERR_OK: drop this packet for input (don't continue input processing)
+ *
+ * ATTENTION: don't call any tcp api functions that might change tcp state (pcb
+ * state or any pcb lists) from this callback!
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_TCP_INPACKET_PCB(pcb, hdr, optlen, opt1len, opt2, p)
+#endif
+
+/**
+ * LWIP_HOOK_TCP_OUT_TCPOPT_LENGTH:
+ * Hook for increasing the size of the options allocated with a tcp header.
+ * Together with LWIP_HOOK_TCP_OUT_ADD_TCPOPTS, this can be used to add custom
+ * options to outgoing tcp segments.
+ * Signature:\code{.c}
+ * u8_t my_hook_tcp_out_tcpopt_length(const struct tcp_pcb *pcb, u8_t internal_option_length);
+ * \endcode
+ * Arguments:
+ * - pcb: tcp_pcb that transmits (ATTENTION: this may be NULL or
+ *        struct tcp_pcb_listen if pcb->state == LISTEN)
+ * - internal_option_length: tcp option length used by the stack internally
+ * Return value:
+ * - a number of bytes to allocate for tcp options (internal_option_length <= ret <= 40)
+ *
+ * ATTENTION: don't call any tcp api functions that might change tcp state (pcb
+ * state or any pcb lists) from this callback!
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_TCP_OUT_TCPOPT_LENGTH(pcb, internal_len)
+#endif
+
+/**
+ * LWIP_HOOK_TCP_OUT_ADD_TCPOPTS:
+ * Hook for adding custom options to outgoing tcp segments.
+ * Space for these custom options has to be reserved via LWIP_HOOK_TCP_OUT_TCPOPT_LENGTH.
+ * Signature:\code{.c}
+ * u32_t *my_hook_tcp_out_add_tcpopts(struct pbuf *p, struct tcp_hdr *hdr, const struct tcp_pcb *pcb, u32_t *opts);
+ * \endcode
+ * Arguments:
+ * - p: output packet, p->payload pointing to tcp header, data follows
+ * - hdr: tcp header
+ * - pcb: tcp_pcb that transmits (ATTENTION: this may be NULL or
+ *        struct tcp_pcb_listen if pcb->state == LISTEN)
+ * - opts: pointer where to add the custom options (there may already be options
+ *         between the header and these)
+ * Return value:
+ * - pointer pointing directly after the inserted options
+ *
+ * ATTENTION: don't call any tcp api functions that might change tcp state (pcb
+ * state or any pcb lists) from this callback!
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_TCP_OUT_ADD_TCPOPTS(p, hdr, pcb, opts)
+#endif
+
+/**
  * LWIP_HOOK_IP4_INPUT(pbuf, input_netif):
- * - called from ip_input() (IPv4)
+ * Called from ip_input() (IPv4)
+ * Signature:\code{.c}
+ *   int my_hook(struct pbuf *pbuf, struct netif *input_netif);
+ * \endcode
+ * Arguments:
  * - pbuf: received struct pbuf passed to ip_input()
  * - input_netif: struct netif on which the packet has been received
  * Return values:
@@ -2622,30 +2924,71 @@
 
 /**
  * LWIP_HOOK_IP4_ROUTE(dest):
- * - called from ip_route() (IPv4)
+ * Called from ip_route() (IPv4)
+ * Signature:\code{.c}
+ *   struct netif *my_hook(const ip4_addr_t *dest);
+ * \endcode
+ * Arguments:
  * - dest: destination IPv4 address
- * Returns the destination netif or NULL if no destination netif is found. In
- * that case, ip_route() continues as normal.
+ * Returns values:
+ * - the destination netif
+ * - NULL if no destination netif is found. In that case, ip_route() continues as normal.
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_IP4_ROUTE()
 #endif
 
 /**
- * LWIP_HOOK_IP4_ROUTE_SRC(dest, src):
- * - source-based routing for IPv4 (see LWIP_HOOK_IP4_ROUTE(), src may be NULL)
+ * LWIP_HOOK_IP4_ROUTE_SRC(src, dest):
+ * Source-based routing for IPv4 - called from ip_route() (IPv4)
+ * Signature:\code{.c}
+ *   struct netif *my_hook(const ip4_addr_t *src, const ip4_addr_t *dest);
+ * \endcode
+ * Arguments:
+ * - src: local/source IPv4 address
+ * - dest: destination IPv4 address
+ * Returns values:
+ * - the destination netif
+ * - NULL if no destination netif is found. In that case, ip_route() continues as normal.
  */
 #ifdef __DOXYGEN__
-#define LWIP_HOOK_IP4_ROUTE_SRC(dest, src)
+#define LWIP_HOOK_IP4_ROUTE_SRC(src, dest)
+#endif
+
+/**
+ * LWIP_HOOK_IP4_CANFORWARD(src, dest):
+ * Check if an IPv4 can be forwarded - called from:
+ * ip4_input() -> ip4_forward() -> ip4_canforward() (IPv4)
+ * - source address is available via ip4_current_src_addr()
+ * - calling an output function in this context (e.g. multicast router) is allowed
+ * Signature:\code{.c}
+ *   int my_hook(struct pbuf *p, u32_t dest_addr_hostorder);
+ * \endcode
+ * Arguments:
+ * - p: packet to forward
+ * - dest: destination IPv4 address
+ * Returns values:
+ * - 1: forward
+ * - 0: don't forward
+ * - -1: no decision. In that case, ip4_canforward() continues as normal.
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_IP4_CANFORWARD(src, dest)
 #endif
 
 /**
  * LWIP_HOOK_ETHARP_GET_GW(netif, dest):
- * - called from etharp_output() (IPv4)
+ * Called from etharp_output() (IPv4)
+ * Signature:\code{.c}
+ *   const ip4_addr_t *my_hook(struct netif *netif, const ip4_addr_t *dest);
+ * \endcode
+ * Arguments:
  * - netif: the netif used for sending
  * - dest: the destination IPv4 address
- * Returns the IPv4 address of the gateway to handle the specified destination
- * IPv4 address. If NULL is returned, the netif's default gateway is used.
+ * Return values:
+ * - the IPv4 address of the gateway to handle the specified destination IPv4 address
+ * - NULL, in which case the netif's default gateway is used
+ *
  * The returned address MUST be directly reachable on the specified netif!
  * This function is meant to implement advanced IPv4 routing together with
  * LWIP_HOOK_IP4_ROUTE(). The actual routing/gateway table implementation is
@@ -2657,7 +3000,11 @@
 
 /**
  * LWIP_HOOK_IP6_INPUT(pbuf, input_netif):
- * - called from ip6_input() (IPv6)
+ * Called from ip6_input() (IPv6)
+ * Signature:\code{.c}
+ *   int my_hook(struct pbuf *pbuf, struct netif *input_netif);
+ * \endcode
+ * Arguments:
  * - pbuf: received struct pbuf passed to ip6_input()
  * - input_netif: struct netif on which the packet has been received
  * Return values:
@@ -2672,11 +3019,16 @@
 
 /**
  * LWIP_HOOK_IP6_ROUTE(src, dest):
- * - called from ip6_route() (IPv6)
- * - src: sourc IPv6 address
+ * Called from ip_route() (IPv6)
+ * Signature:\code{.c}
+ *   struct netif *my_hook(const ip6_addr_t *dest, const ip6_addr_t *src);
+ * \endcode
+ * Arguments:
+ * - src: source IPv6 address
  * - dest: destination IPv6 address
- * Returns the destination netif or NULL if no destination netif is found. In
- * that case, ip6_route() continues as normal.
+ * Return values:
+ * - the destination netif
+ * - NULL if no destination netif is found. In that case, ip6_route() continues as normal.
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_IP6_ROUTE(src, dest)
@@ -2684,11 +3036,17 @@
 
 /**
  * LWIP_HOOK_ND6_GET_GW(netif, dest):
- * - called from nd6_get_next_hop_entry() (IPv6)
+ * Called from nd6_get_next_hop_entry() (IPv6)
+ * Signature:\code{.c}
+ *   const ip6_addr_t *my_hook(struct netif *netif, const ip6_addr_t *dest);
+ * \endcode
+ * Arguments:
  * - netif: the netif used for sending
  * - dest: the destination IPv6 address
- * Returns the IPv6 address of the next hop to handle the specified destination
- * IPv6 address. If NULL is returned, a NDP-discovered router is used instead.
+ * Return values:
+ * - the IPv6 address of the next hop to handle the specified destination IPv6 address
+ * - NULL, in which case a NDP-discovered router is used instead
+ *
  * The returned address MUST be directly reachable on the specified netif!
  * This function is meant to implement advanced IPv6 routing together with
  * LWIP_HOOK_IP6_ROUTE(). The actual routing/gateway table implementation is
@@ -2700,7 +3058,11 @@
 
 /**
  * LWIP_HOOK_VLAN_CHECK(netif, eth_hdr, vlan_hdr):
- * - called from ethernet_input() if VLAN support is enabled
+ * Called from ethernet_input() if VLAN support is enabled
+ * Signature:\code{.c}
+ *   int my_hook(struct netif *netif, struct eth_hdr *eth_hdr, struct eth_vlan_hdr *vlan_hdr);
+ * \endcode
+ * Arguments:
  * - netif: struct netif on which the packet has been received
  * - eth_hdr: struct eth_hdr of the packet
  * - vlan_hdr: struct eth_vlan_hdr of the packet
@@ -2716,16 +3078,18 @@
  * LWIP_HOOK_VLAN_SET:
  * Hook can be used to set prio_vid field of vlan_hdr. If you need to store data
  * on per-netif basis to implement this callback, see @ref netif_cd.
- * Called from ethernet_output() if VLAN support (@ref ETHARP_SUPPORT_VLAN) is enabled.\n
- * Signature: s32_t my_hook_vlan_set(struct netif* netif, struct pbuf* pbuf, const struct eth_addr* src, const struct eth_addr* dst, u16_t eth_type);\n
+ * Called from ethernet_output() if VLAN support (@ref ETHARP_SUPPORT_VLAN) is enabled.<br>
+ * Signature:\code{.c}
+ *   s32_t my_hook_vlan_set(struct netif* netif, struct pbuf* pbuf, const struct eth_addr* src, const struct eth_addr* dst, u16_t eth_type);
+ * \endcode
  * Arguments:
  * - netif: struct netif that the packet will be sent through
  * - p: struct pbuf packet to be sent
  * - src: source eth address
  * - dst: destination eth address
- * - eth_type: ethernet type to packet to be sent\n
- * 
- * 
+ * - eth_type: ethernet type to packet to be sent<br>
+ *
+ *
  * Return values:
  * - &lt;0: Packet shall not contain VLAN header.
  * - 0 &lt;= return value &lt;= 0xFFFF: Packet shall contain VLAN header. Return value is prio_vid in host byte order.
@@ -2736,7 +3100,10 @@
 
 /**
  * LWIP_HOOK_MEMP_AVAILABLE(memp_t_type):
- * - called from memp_free() when a memp pool was empty and an item is now available
+ * Called from memp_free() when a memp pool was empty and an item is now available
+ * Signature:\code{.c}
+ *   void my_hook(memp_t type);
+ * \endcode
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_MEMP_AVAILABLE(memp_t_type)
@@ -2745,7 +3112,16 @@
 /**
  * LWIP_HOOK_UNKNOWN_ETH_PROTOCOL(pbuf, netif):
  * Called from ethernet_input() when an unknown eth type is encountered.
- * Return ERR_OK if packet is accepted, any error code otherwise.
+ * Signature:\code{.c}
+ *   err_t my_hook(struct pbuf* pbuf, struct netif* netif);
+ * \endcode
+ * Arguments:
+ * - p: rx packet with unknown eth type
+ * - netif: netif on which the packet has been received
+ * Return values:
+ * - ERR_OK if packet is accepted (hook function now owns the pbuf)
+ * - any error code otherwise (pbuf is freed)
+ *
  * Payload points to ethernet header!
  */
 #ifdef __DOXYGEN__
@@ -2753,33 +3129,42 @@
 #endif
 
 /**
- * LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type):
+ * LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type, options_len_ptr):
  * Called from various dhcp functions when sending a DHCP message.
  * This hook is called just before the DHCP message trailer is added, so the
  * options are at the end of a DHCP message.
+ * Signature:\code{.c}
+ *   void my_hook(struct netif *netif, struct dhcp *dhcp, u8_t state, struct dhcp_msg *msg,
+ *                u8_t msg_type, u16_t *options_len_ptr);
+ * \endcode
  * Arguments:
  * - netif: struct netif that the packet will be sent through
  * - dhcp: struct dhcp on that netif
  * - state: current dhcp state (dhcp_state_enum_t as an u8_t)
  * - msg: struct dhcp_msg that will be sent
  * - msg_type: dhcp message type to be sent (u8_t)
- * Returns void
+ * - options_len_ptr: pointer to the current length of options in the dhcp_msg "msg"
+ *                    (must be increased when options are added!)
  *
  * Options need to appended like this:
- *   LWIP_ASSERT("dhcp option overflow", dhcp->options_out_len + option_len + 2 <= DHCP_OPTIONS_LEN);
- *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_number&gt;;
- *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_len&gt;;
- *   dhcp->msg_out->options[dhcp->options_out_len++] = &lt;option_bytes&gt;;
+ *   LWIP_ASSERT("dhcp option overflow", *options_len_ptr + option_len + 2 <= DHCP_OPTIONS_LEN);
+ *   msg->options[(*options_len_ptr)++] = &lt;option_number&gt;;
+ *   msg->options[(*options_len_ptr)++] = &lt;option_len&gt;;
+ *   msg->options[(*options_len_ptr)++] = &lt;option_bytes&gt;;
  *   [...]
  */
 #ifdef __DOXYGEN__
-#define LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type)
+#define LWIP_HOOK_DHCP_APPEND_OPTIONS(netif, dhcp, state, msg, msg_type, options_len_ptr)
 #endif
 
 /**
- * LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset):
+ * LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, option_value_offset):
  * Called from dhcp_parse_reply when receiving a DHCP message.
  * This hook is called for every option in the received message that is not handled internally.
+ * Signature:\code{.c}
+ *   void my_hook(struct netif *netif, struct dhcp *dhcp, u8_t state, struct dhcp_msg *msg,
+ *                u8_t msg_type, u8_t option, u8_t option_len, struct pbuf *pbuf, u16_t option_value_offset);
+ * \endcode
  * Arguments:
  * - netif: struct netif that the packet will be sent through
  * - dhcp: struct dhcp on that netif
@@ -2790,8 +3175,7 @@
  * - option: option value (u8_t)
  * - len: option data length (u8_t)
  * - pbuf: pbuf where option data is contained
- * - offset: offset in pbuf where option *data* begins
- * Returns void
+ * - option_value_offset: offset in pbuf where option data begins
  *
  * A nice way to get the option contents is pbuf_get_contiguous():
  *  u8_t buf[32];
@@ -2799,6 +3183,103 @@
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset)
+#endif
+
+/**
+ * LWIP_HOOK_DHCP6_APPEND_OPTIONS(netif, dhcp6, state, msg, msg_type, options_len_ptr, max_len):
+ * Called from various dhcp6 functions when sending a DHCP6 message.
+ * This hook is called just before the DHCP6 message is sent, so the
+ * options are at the end of a DHCP6 message.
+ * Signature:\code{.c}
+ *   void my_hook(struct netif *netif, struct dhcp6 *dhcp, u8_t state, struct dhcp6_msg *msg,
+ *                u8_t msg_type, u16_t *options_len_ptr);
+ * \endcode
+ * Arguments:
+ * - netif: struct netif that the packet will be sent through
+ * - dhcp6: struct dhcp6 on that netif
+ * - state: current dhcp6 state (dhcp6_state_enum_t as an u8_t)
+ * - msg: struct dhcp6_msg that will be sent
+ * - msg_type: dhcp6 message type to be sent (u8_t)
+ * - options_len_ptr: pointer to the current length of options in the dhcp6_msg "msg"
+ *                    (must be increased when options are added!)
+ *
+ * Options need to appended like this:
+ *   u8_t *options = (u8_t *)(msg + 1);
+ *   LWIP_ASSERT("dhcp option overflow", sizeof(struct dhcp6_msg) + *options_len_ptr + newoptlen <= max_len);
+ *   options[(*options_len_ptr)++] = &lt;option_data&gt;;
+ *   [...]
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_DHCP6_APPEND_OPTIONS(netif, dhcp6, state, msg, msg_type, options_len_ptr, max_len)
+#endif
+
+/**
+ * LWIP_HOOK_SOCKETS_SETSOCKOPT(s, sock, level, optname, optval, optlen, err)
+ * Called from socket API to implement setsockopt() for options not provided by lwIP.
+ * Core lock is held when this hook is called.
+ * Signature:\code{.c}
+ *   int my_hook(int s, struct lwip_sock *sock, int level, int optname, const void *optval, socklen_t optlen, int *err)
+ * \endcode
+ * Arguments:
+ * - s: socket file descriptor
+ * - sock: internal socket descriptor (see lwip/priv/sockets_priv.h)
+ * - level: protocol level at which the option resides
+ * - optname: option to set
+ * - optval: value to set
+ * - optlen: size of optval
+ * - err: output error
+ * Return values:
+ * - 0: Hook has not consumed the option, code continues as normal (to internal options)
+ * - != 0: Hook has consumed the option, 'err' is returned
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_SOCKETS_SETSOCKOPT(s, sock, level, optname, optval, optlen, err)
+#endif
+
+/**
+ * LWIP_HOOK_SOCKETS_GETSOCKOPT(s, sock, level, optname, optval, optlen, err)
+ * Called from socket API to implement getsockopt() for options not provided by lwIP.
+ * Core lock is held when this hook is called.
+ * Signature:\code{.c}
+ *   int my_hook(int s, struct lwip_sock *sock, int level, int optname, void *optval, socklen_t *optlen, int *err)
+ * \endcode
+ * Arguments:
+ * - s: socket file descriptor
+ * - sock: internal socket descriptor (see lwip/priv/sockets_priv.h)
+ * - level: protocol level at which the option resides
+ * - optname: option to get
+ * - optval: value to get
+ * - optlen: size of optval
+ * - err: output error
+ * Return values:
+ * - 0: Hook has not consumed the option, code continues as normal (to internal options)
+ * - != 0: Hook has consumed the option, 'err' is returned
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_SOCKETS_GETSOCKOPT(s, sock, level, optname, optval, optlen, err)
+#endif
+
+/**
+ * LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, addrtype, err)
+ * Called from netconn APIs (not usable with callback apps) allowing an
+ * external DNS resolver (which uses sequential API) to handle the query.
+ * Signature:\code{.c}
+ *   int my_hook(const char *name, ip_addr_t *addr, u8_t addrtype, err_t *err)
+ * \endcode
+ * Arguments:
+ * - name: hostname to resolve
+ * - addr: output host address
+ * - addrtype: type of address to query
+ * - err: output error
+ * Return values:
+ * - 0: Hook has not consumed hostname query, query continues into DNS module
+ * - != 0: Hook has consumed the query
+ *
+ * err must also be checked to determine if the hook consumed the query, but
+ * the query failed
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, addrtype, err)
 #endif
 /**
  * @}
@@ -3045,6 +3526,13 @@
 #endif
 
 /**
+ * ACD_DEBUG: Enable debugging in acd.c.
+ */
+#if !defined ACD_DEBUG || defined __DOXYGEN__
+#define ACD_DEBUG                       LWIP_DBG_OFF
+#endif
+
+/**
  * DNS_DEBUG: Enable debugging for DNS.
  */
 #if !defined DNS_DEBUG || defined __DOXYGEN__
@@ -3057,9 +3545,23 @@
 #if !defined IP6_DEBUG || defined __DOXYGEN__
 #define IP6_DEBUG                       LWIP_DBG_OFF
 #endif
+
+/**
+ * DHCP6_DEBUG: Enable debugging in dhcp6.c.
+ */
+#if !defined DHCP6_DEBUG || defined __DOXYGEN__
+#define DHCP6_DEBUG                     LWIP_DBG_OFF
+#endif
 /**
  * @}
  */
+
+/**
+ * LWIP_TESTMODE: Changes to make unit test possible
+ */
+#if !defined LWIP_TESTMODE
+#define LWIP_TESTMODE                   0
+#endif
 
 /*
    --------------------------------------------------

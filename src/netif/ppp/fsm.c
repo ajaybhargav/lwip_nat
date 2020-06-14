@@ -236,7 +236,7 @@ static void terminate_layer(fsm *f, int nextstate) {
  */
 void fsm_close(fsm *f, const char *reason) {
     f->term_reason = reason;
-    f->term_reason_len = (reason == NULL? 0: LWIP_MIN(strlen(reason), 0xFF) );
+    f->term_reason_len = (reason == NULL? 0: (u8_t)LWIP_MIN(strlen(reason), 0xFF) );
     switch( f->state ){
     case PPP_FSM_STARTING:
 	f->state = PPP_FSM_INITIAL;
@@ -290,7 +290,7 @@ static void fsm_timeout(void *arg) {
     case PPP_FSM_ACKRCVD:
     case PPP_FSM_ACKSENT:
 	if (f->retransmits <= 0) {
-	    ppp_warn("%s: timeout sending Config-Requests", PROTO_NAME(f));
+	    ppp_warn(("%s: timeout sending Config-Requests", PROTO_NAME(f)));
 	    f->state = PPP_FSM_STOPPED;
 	    if( (f->flags & OPT_PASSIVE) == 0 && f->callbacks->finished )
 		(*f->callbacks->finished)(f);
@@ -464,7 +464,7 @@ static void fsm_rconfack(fsm *f, int id, u_char *inp, int len) {
     if( !(f->callbacks->ackci? (*f->callbacks->ackci)(f, inp, len):
 	  (len == 0)) ){
 	/* Ack is bad - ignore it */
-	ppp_error("Received bad configure-ack: %P", inp, len);
+	ppp_error(("Received bad configure-ack: %P", inp, len));
 	return;
     }
     f->seen_ack = 1;
@@ -524,14 +524,14 @@ static void fsm_rconfnakrej(fsm *f, int code, int id, u_char *inp, int len) {
 	treat_as_reject = (f->rnakloops >= f->maxnakloops);
 	if (f->callbacks->nakci == NULL
 	    || !(ret = f->callbacks->nakci(f, inp, len, treat_as_reject))) {
-	    ppp_error("Received bad configure-nak: %P", inp, len);
+	    ppp_error(("Received bad configure-nak: %P", inp, len));
 	    return;
 	}
     } else {
 	f->rnakloops = 0;
 	if (f->callbacks->rejci == NULL
 	    || !(ret = f->callbacks->rejci(f, inp, len))) {
-	    ppp_error("Received bad configure-rej: %P", inp, len);
+	    ppp_error(("Received bad configure-rej: %P", inp, len));
 	    return;
 	}
     }
@@ -588,9 +588,9 @@ static void fsm_rtermreq(fsm *f, int id, u_char *p, int len) {
 
     case PPP_FSM_OPENED:
 	if (len > 0) {
-	    ppp_info("%s terminated by peer (%0.*v)", PROTO_NAME(f), len, p);
+	    ppp_info(("%s terminated by peer (%0.*v)", PROTO_NAME(f), len, p));
 	} else
-	    ppp_info("%s terminated by peer", PROTO_NAME(f));
+	    ppp_info(("%s terminated by peer", PROTO_NAME(f)));
 	f->retransmits = 0;
 	f->state = PPP_FSM_STOPPING;
 	if (f->callbacks->down)
@@ -651,7 +651,7 @@ static void fsm_rcoderej(fsm *f, u_char *inp, int len) {
     }
     GETCHAR(code, inp);
     GETCHAR(id, inp);
-    ppp_warn("%s: Rcvd Code-Reject for code %d, id %d", PROTO_NAME(f), code, id);
+    ppp_warn(("%s: Rcvd Code-Reject for code %d, id %d", PROTO_NAME(f), code, id));
 
     if( f->state == PPP_FSM_ACKRCVD )
 	f->state = PPP_FSM_REQSENT;

@@ -16,7 +16,7 @@
  * from this software without specific prior written permission.
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
- * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  *
  * Van Jacobson (van@helios.ee.lbl.gov), Dec 31, 1989:
  * - Initial distribution.
@@ -30,6 +30,10 @@
 
 #include "lwip/ip.h"
 #include "lwip/priv/tcp_priv.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define MAX_SLOTS 16 /* must be > 2 and < 256 */
 #define MAX_HDR   128
@@ -155,6 +159,10 @@ extern u8_t  vj_compress_tcp     (struct vjcompress *comp, struct pbuf **pb);
 extern void  vj_uncompress_err   (struct vjcompress *comp);
 extern int   vj_uncompress_uncomp(struct pbuf *nb, struct vjcompress *comp);
 extern int   vj_uncompress_tcp   (struct pbuf **nb, struct vjcompress *comp);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* VJ_H */
 

@@ -56,24 +56,22 @@
 extern "C" {
 #endif
 
-#define ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE  0x01
-#define ALTCP_MBEDTLS_FLAGS_APPLDATA_SENT   0x02
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED 0x04
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSED       0x08
-#define ALTCP_MBEDTLS_FLAGS_TX_CLOSED       0x10
-#define ALTCP_MBEDTLS_FLAGS_CLOSED          (ALTCP_MBEDTLS_FLAGS_RX_CLOSED|ALTCP_MBEDTLS_FLAGS_TX_CLOSED)
-#define ALTCP_MBEDTLS_FLAGS_UPPER_CALLED    0x20
+#define ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE    0x01
+#define ALTCP_MBEDTLS_FLAGS_UPPER_CALLED      0x02
+#define ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED   0x04
+#define ALTCP_MBEDTLS_FLAGS_RX_CLOSED         0x08
 
 typedef struct altcp_mbedtls_state_s {
   void *conf;
   mbedtls_ssl_context ssl_context;
   /* chain of rx pbufs (before decryption) */
-  struct pbuf* rx;
-  struct pbuf* rx_app;
+  struct pbuf *rx;
+  struct pbuf *rx_app;
   u8_t flags;
   int rx_passed_unrecved;
   int bio_bytes_read;
   int bio_bytes_appl;
+  int overhead_bytes_adjust;
 } altcp_mbedtls_state_t;
 
 #ifdef __cplusplus

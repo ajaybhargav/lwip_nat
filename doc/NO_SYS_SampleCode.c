@@ -56,8 +56,8 @@ netif_init(struct netif *netif)
   netif->flags      = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET | NETIF_FLAG_IGMP | NETIF_FLAG_MLD6;
   MIB2_INIT_NETIF(netif, snmp_ifType_ethernet_csmacd, 100000000);
 
-  SMEMCPY(netif->hwaddr, your_mac_address_goes_here, sizeof(netif->hwaddr));
-  netif->hwaddr_len = sizeof(netif->hwaddr);
+  SMEMCPY(netif->hwaddr, your_mac_address_goes_here, ETH_HWADDR_LEN);
+  netif->hwaddr_len = ETH_HWADDR_LEN;
 
   return ERR_OK;
 }
@@ -73,7 +73,6 @@ main(void)
   netif.name[0] = 'e';
   netif.name[1] = '0';
   netif_create_ip6_linklocal_address(&netif, 1);
-  netif.ip6_autoconfig_enabled = 1;
   netif_set_status_callback(&netif, netif_status_callback);
   netif_set_default(&netif);
   netif_set_up(&netif);

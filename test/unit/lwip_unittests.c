@@ -1,11 +1,15 @@
 #include "lwip_check.h"
 
 #include "ip4/test_ip4.h"
+#include "ip6/test_ip6.h"
 #include "udp/test_udp.h"
 #include "tcp/test_tcp.h"
 #include "tcp/test_tcp_oos.h"
+#include "core/test_def.h"
 #include "core/test_mem.h"
+#include "core/test_netif.h"
 #include "core/test_pbuf.h"
+#include "core/test_timers.h"
 #include "etharp/test_etharp.h"
 #include "dhcp/test_dhcp.h"
 #include "mdns/test_mdns.h"
@@ -16,6 +20,13 @@
 #if !NO_SYS
 #include "lwip/tcpip.h"
 #endif
+
+/* This function is used for LWIP_RAND by some ports... */
+unsigned int
+lwip_port_rand(void)
+{
+  return rand();
+}
 
 Suite* create_suite(const char* name, testfunc *tests, size_t num_tests, SFun setup, SFun teardown)
 {
@@ -59,11 +70,15 @@ int main(void)
   size_t i;
   suite_getter_fn* suites[] = {
     ip4_suite,
+    ip6_suite,
     udp_suite,
     tcp_suite,
     tcp_oos_suite,
+    def_suite,
     mem_suite,
+    netif_suite,
     pbuf_suite,
+    timers_suite,
     etharp_suite,
     dhcp_suite,
     mdns_suite,
@@ -80,6 +95,7 @@ int main(void)
 #endif
 
   sr = srunner_create((suites[0])());
+  srunner_set_xml(sr, "lwip_unittests.xml");
   for(i = 1; i < num; i++) {
     srunner_add_suite(sr, ((suite_getter_fn*)suites[i])());
   }

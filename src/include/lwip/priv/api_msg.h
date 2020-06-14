@@ -39,10 +39,6 @@
 
 #include "lwip/opt.h"
 
-#if LWIP_NETCONN || LWIP_SOCKET /* don't build if not configured for use in lwipopts.h */
-/* Note: Netconn API is always available when sockets are enabled -
- * sockets are implemented on top of them */
-
 #include "lwip/arch.h"
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
@@ -54,6 +50,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#if LWIP_NETCONN || LWIP_SOCKET /* don't build if not configured for use in lwipopts.h */
+/* Note: Netconn API is always available when sockets are enabled -
+ * sockets are implemented on top of them */
 
 #if LWIP_MPU_COMPATIBLE
 #if LWIP_NETCONN_SEM_PER_THREAD
@@ -139,6 +139,7 @@ struct api_msg {
     struct {
       API_MSG_M_DEF_C(ip_addr_t, multiaddr);
       API_MSG_M_DEF_C(ip_addr_t, netif_addr);
+      u8_t if_idx;
       enum netconn_igmp join_or_leave;
     } jl;
 #endif /* LWIP_IGMP || (LWIP_IPV6 && LWIP_IPV6_MLD) */
@@ -186,6 +187,9 @@ struct dns_api_msg {
 };
 #endif /* LWIP_DNS */
 
+#if LWIP_NETCONN_FULLDUPLEX
+int lwip_netconn_is_deallocated_msg(void *msg);
+#endif
 int lwip_netconn_is_err_msg(void *msg, err_t *err);
 void lwip_netconn_do_newconn         (void *m);
 void lwip_netconn_do_delconn         (void *m);
@@ -205,6 +209,7 @@ void lwip_netconn_do_close           (void *m);
 void lwip_netconn_do_shutdown        (void *m);
 #if LWIP_IGMP || (LWIP_IPV6 && LWIP_IPV6_MLD)
 void lwip_netconn_do_join_leave_group(void *m);
+void lwip_netconn_do_join_leave_group_netif(void *m);
 #endif /* LWIP_IGMP || (LWIP_IPV6 && LWIP_IPV6_MLD) */
 
 #if LWIP_DNS
@@ -213,6 +218,10 @@ void lwip_netconn_do_gethostbyname(void *arg);
 
 struct netconn* netconn_alloc(enum netconn_type t, netconn_callback callback);
 void netconn_free(struct netconn *conn);
+
+#endif /* LWIP_NETCONN || LWIP_SOCKET */
+
+#if LWIP_NETIF_API /* don't build if not configured for use in lwipopts.h */
 
 /* netifapi related lwIP internal definitions */
 
@@ -254,10 +263,10 @@ struct netifapi_msg {
   } msg;
 };
 
+#endif /* LWIP_NETIF_API */
+
 #ifdef __cplusplus
 }
 #endif
-
-#endif /* LWIP_NETCONN || LWIP_SOCKET */
 
 #endif /* LWIP_HDR_API_MSG_H */
