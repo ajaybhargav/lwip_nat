@@ -1,5 +1,6 @@
 #include "test_ip4.h"
 
+#include "lwip/icmp.h"
 #include "lwip/ip4.h"
 #include "lwip/etharp.h"
 #include "lwip/inet_chksum.h"
@@ -16,6 +17,9 @@
 static struct netif test_netif;
 static ip4_addr_t test_ipaddr, test_netmask, test_gw;
 static int linkoutput_ctr;
+static int linkoutput_byte_ctr;
+static u16_t linkoutput_pkt_len;
+static u8_t linkoutput_pkt[100];
 
 /* reference internal lwip variable in netif.c */
 
@@ -25,6 +29,9 @@ test_netif_linkoutput(struct netif *netif, struct pbuf *p)
   fail_unless(netif == &test_netif);
   fail_unless(p != NULL);
   linkoutput_ctr++;
+  linkoutput_byte_ctr += p->tot_len;
+  /* Copy start of packet into buffer */
+  linkoutput_pkt_len = pbuf_copy_partial(p, linkoutput_pkt, sizeof(linkoutput_pkt), 0);
   return ERR_OK;
 }
 
@@ -102,6 +109,12 @@ create_ip4_input_fragment(u16_t ip_id, u16_t start, u16_t len, int last)
   }
 }
 
+static err_t arpless_output(struct netif *netif, struct pbuf *p,
+                            const ip4_addr_t *ipaddr) {
+  LWIP_UNUSED_ARG(ipaddr);
+  return netif->linkoutput(netif, p);
+}
+
 /* Setups/teardown functions */
 
 static void
@@ -126,6 +139,29 @@ ip4_teardown(void)
 }
 
 /* Test functions */
+START_TEST(test_ip4_frag)
+{
+  struct pbuf *data = pbuf_alloc(PBUF_IP, 8000, PBUF_RAM);
+  ip_addr_t peer_ip = IPADDR4_INIT_BYTES(192,168,0,5);
+  err_t err;
+  LWIP_UNUSED_ARG(_i);
+
+  linkoutput_ctr = 0;
+
+  /* Verify that 8000 byte payload is split into six packets */
+  fail_unless(data != NULL);
+  test_netif_add();
+  test_netif.output = arpless_output;
+  err = ip4_output_if_src(data, &test_ipaddr, ip_2_ip4(&peer_ip),
+                          16, 0, IP_PROTO_UDP, &test_netif);
+  fail_unless(err == ERR_OK);
+  fail_unless(linkoutput_ctr == 6);
+  fail_unless(linkoutput_byte_ctr == (8000 + (6 * IP_HLEN)));
+  pbuf_free(data);
+  test_netif_remove();
+}
+END_TEST
+
 START_TEST(test_ip4_reass)
 {
   const u16_t ip_id = 128;
@@ -203,8 +239,9 @@ START_TEST(test_127_0_0_1)
 {
   ip4_addr_t localhost;
   struct pbuf* p;
-
   LWIP_UNUSED_ARG(_i);
+
+  linkoutput_ctr = 0;
 
   test_netif_add();
   netif_set_down(netif_get_loopif());
@@ -235,14 +272,71 @@ START_TEST(test_ip4addr_aton)
 }
 END_TEST
 
+/* Test for bug #59364 */
+START_TEST(test_ip4_icmp_replylen_short)
+{
+  /* IP packet to 192.168.0.1 using proto 0x22 and 1 byte payload */
+  const u8_t unknown_proto[] = {
+    0x45, 0x00, 0x00, 0x15, 0xd4, 0x31, 0x00, 0x00, 0xff, 0x22,
+    0x66, 0x41, 0xc0, 0xa8, 0x00, 0x02, 0xc0, 0xa8, 0x00, 0x01,
+    0xaa };
+  struct pbuf *p;
+  const int icmp_len = IP_HLEN + sizeof(struct icmp_hdr);
+  LWIP_UNUSED_ARG(_i);
+
+  linkoutput_ctr = 0;
+
+  test_netif_add();
+  test_netif.output = arpless_output;
+  p = pbuf_alloc(PBUF_IP, sizeof(unknown_proto), PBUF_RAM);
+  pbuf_take(p, unknown_proto, sizeof(unknown_proto));
+  fail_unless(ip4_input(p, &test_netif) == ERR_OK);
+
+  fail_unless(linkoutput_ctr == 1);
+  /* Verify outgoing ICMP packet has no extra data */
+  fail_unless(linkoutput_pkt_len == icmp_len + sizeof(unknown_proto));
+  fail_if(memcmp(&linkoutput_pkt[icmp_len], unknown_proto, sizeof(unknown_proto)));
+}
+END_TEST
+
+START_TEST(test_ip4_icmp_replylen_first_8)
+{
+  /* IP packet to 192.168.0.1 using proto 0x22 and 11 bytes payload */
+  const u8_t unknown_proto[] = {
+    0x45, 0x00, 0x00, 0x1f, 0xd4, 0x31, 0x00, 0x00, 0xff, 0x22,
+    0x66, 0x37, 0xc0, 0xa8, 0x00, 0x02, 0xc0, 0xa8, 0x00, 0x01,
+    0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9,
+    0xaa };
+  struct pbuf *p;
+  const int icmp_len = IP_HLEN + sizeof(struct icmp_hdr);
+  const int unreach_len = IP_HLEN + 8;
+  LWIP_UNUSED_ARG(_i);
+
+  linkoutput_ctr = 0;
+
+  test_netif_add();
+  test_netif.output = arpless_output;
+  p = pbuf_alloc(PBUF_IP, sizeof(unknown_proto), PBUF_RAM);
+  pbuf_take(p, unknown_proto, sizeof(unknown_proto));
+  fail_unless(ip4_input(p, &test_netif) == ERR_OK);
+
+  fail_unless(linkoutput_ctr == 1);
+  fail_unless(linkoutput_pkt_len == icmp_len + unreach_len);
+  fail_if(memcmp(&linkoutput_pkt[icmp_len], unknown_proto, unreach_len));
+}
+END_TEST
+
 /** Create the suite including all tests for this module */
 Suite *
 ip4_suite(void)
 {
   testfunc tests[] = {
+    TESTFUNC(test_ip4_frag),
     TESTFUNC(test_ip4_reass),
     TESTFUNC(test_127_0_0_1),
     TESTFUNC(test_ip4addr_aton),
+    TESTFUNC(test_ip4_icmp_replylen_short),
+    TESTFUNC(test_ip4_icmp_replylen_first_8),
   };
   return create_suite("IPv4", tests, sizeof(tests)/sizeof(testfunc), ip4_setup, ip4_teardown);
 }

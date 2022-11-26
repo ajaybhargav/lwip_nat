@@ -728,7 +728,7 @@ tcp_bind(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
             if ((IP_IS_V6(ipaddr) == IP_IS_V6_VAL(cpcb->local_ip)) &&
                 (ip_addr_isany(&cpcb->local_ip) ||
                  ip_addr_isany(ipaddr) ||
-                 ip_addr_cmp(&cpcb->local_ip, ipaddr))) {
+                 ip_addr_eq(&cpcb->local_ip, ipaddr))) {
               return ERR_USE;
             }
           }
@@ -871,7 +871,7 @@ tcp_listen_with_backlog_and_err(struct tcp_pcb *pcb, u8_t backlog, err_t *err)
        this port is only used once for every local IP. */
     for (lpcb = tcp_listen_pcbs.listen_pcbs; lpcb != NULL; lpcb = lpcb->next) {
       if ((lpcb->local_port == pcb->local_port) &&
-          ip_addr_cmp(&lpcb->local_ip, &pcb->local_ip)) {
+          ip_addr_eq(&lpcb->local_ip, &pcb->local_ip)) {
         /* this address/port is already used */
         lpcb = NULL;
         res = ERR_USE;
@@ -890,7 +890,7 @@ tcp_listen_with_backlog_and_err(struct tcp_pcb *pcb, u8_t backlog, err_t *err)
   lpcb->state = LISTEN;
   lpcb->prio = pcb->prio;
   lpcb->so_options = pcb->so_options;
-  lpcb->netif_idx = NETIF_NO_INDEX;
+  lpcb->netif_idx = pcb->netif_idx;
   lpcb->ttl = pcb->ttl;
   lpcb->tos = pcb->tos;
 #if LWIP_VLAN_PCP
@@ -1134,8 +1134,8 @@ tcp_connect(struct tcp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port,
         for (cpcb = *tcp_pcb_lists[i]; cpcb != NULL; cpcb = cpcb->next) {
           if ((cpcb->local_port == pcb->local_port) &&
               (cpcb->remote_port == port) &&
-              ip_addr_cmp(&cpcb->local_ip, &pcb->local_ip) &&
-              ip_addr_cmp(&cpcb->remote_ip, ipaddr)) {
+              ip_addr_eq(&cpcb->local_ip, &pcb->local_ip) &&
+              ip_addr_eq(&cpcb->remote_ip, ipaddr)) {
             /* linux returns EISCONN here, but ERR_USE should be OK for us */
             return ERR_USE;
           }
@@ -1215,9 +1215,9 @@ tcp_slowtmr_start:
   }
   while (pcb != NULL) {
     LWIP_DEBUGF(TCP_DEBUG, ("tcp_slowtmr: processing active pcb\n"));
-    LWIP_ASSERT("tcp_slowtmr: active pcb->state != CLOSED\n", pcb->state != CLOSED);
-    LWIP_ASSERT("tcp_slowtmr: active pcb->state != LISTEN\n", pcb->state != LISTEN);
-    LWIP_ASSERT("tcp_slowtmr: active pcb->state != TIME-WAIT\n", pcb->state != TIME_WAIT);
+    LWIP_ASSERT("tcp_slowtmr: active pcb->state != CLOSED", pcb->state != CLOSED);
+    LWIP_ASSERT("tcp_slowtmr: active pcb->state != LISTEN", pcb->state != LISTEN);
+    LWIP_ASSERT("tcp_slowtmr: active pcb->state != TIME-WAIT", pcb->state != TIME_WAIT);
     if (pcb->last_timer == tcp_timer_ctr) {
       /* skip this pcb, we have already processed it */
       prev = pcb;
@@ -1901,8 +1901,10 @@ tcp_alloc(u8_t prio)
     /* As initial send MSS, we use TCP_MSS but limit it to 536.
        The send MSS is updated when an MSS option is received. */
     pcb->mss = INITIAL_MSS;
-    pcb->rto = 3000 / TCP_SLOW_INTERVAL;
-    pcb->sv = 3000 / TCP_SLOW_INTERVAL;
+    /* Set initial TCP's retransmission timeout to 3000 ms by default.
+       This value could be configured in lwipopts */
+    pcb->rto = LWIP_TCP_RTO_TIME / TCP_SLOW_INTERVAL;
+    pcb->sv = LWIP_TCP_RTO_TIME / TCP_SLOW_INTERVAL;
     pcb->rtime = -1;
     pcb->cwnd = 1;
     pcb->tmr = tcp_ticks;
@@ -2312,7 +2314,7 @@ tcp_netif_ip_addr_changed_pcblist(const ip_addr_t *old_addr, struct tcp_pcb *pcb
 
   while (pcb != NULL) {
     /* PCB bound to current local interface address? */
-    if (ip_addr_cmp(&pcb->local_ip, old_addr)
+    if (ip_addr_eq(&pcb->local_ip, old_addr)
 #if LWIP_AUTOIP
         /* connections to link-local addresses must persist (RFC3927 ch. 1.9) */
         && (!IP_IS_V4_VAL(pcb->local_ip) || !ip4_addr_islinklocal(ip_2_ip4(&pcb->local_ip)))
@@ -2347,7 +2349,7 @@ tcp_netif_ip_addr_changed(const ip_addr_t *old_addr, const ip_addr_t *new_addr)
       /* PCB bound to current local interface address? */
       for (lpcb = tcp_listen_pcbs.listen_pcbs; lpcb != NULL; lpcb = lpcb->next) {
         /* PCB bound to current local interface address? */
-        if (ip_addr_cmp(&lpcb->local_ip, old_addr)) {
+        if (ip_addr_eq(&lpcb->local_ip, old_addr)) {
           /* The PCB is listening to the old ipaddr and
             * is set to listen to the new one instead */
           ip_addr_copy(lpcb->local_ip, *new_addr);

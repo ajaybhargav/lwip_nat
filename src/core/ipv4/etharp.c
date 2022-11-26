@@ -292,7 +292,7 @@ etharp_find_entry(const ip4_addr_t *ipaddr, u8_t flags, struct netif *netif)
       LWIP_ASSERT("state == ETHARP_STATE_PENDING || state >= ETHARP_STATE_STABLE",
                   state == ETHARP_STATE_PENDING || state >= ETHARP_STATE_STABLE);
       /* if given, does IP address match IP address in ARP entry? */
-      if (ipaddr && ip4_addr_cmp(ipaddr, &arp_table[i].ipaddr)
+      if (ipaddr && ip4_addr_eq(ipaddr, &arp_table[i].ipaddr)
 #if ETHARP_TABLE_MATCH_NETIF
           && ((netif == NULL) || (netif == arp_table[i].netif))
 #endif /* ETHARP_TABLE_MATCH_NETIF */
@@ -689,9 +689,9 @@ etharp_input(struct pbuf *p, struct netif *netif)
     from_us = 0;
   } else {
     /* ARP packet directed to us? */
-    for_us = (u8_t)ip4_addr_cmp(&dipaddr, netif_ip4_addr(netif));
+    for_us = (u8_t)ip4_addr_eq(&dipaddr, netif_ip4_addr(netif));
     /* ARP packet from us? */
-    from_us = (u8_t)ip4_addr_cmp(&sipaddr, netif_ip4_addr(netif));
+    from_us = (u8_t)ip4_addr_eq(&sipaddr, netif_ip4_addr(netif));
   }
 
   /* ARP message directed to us?
@@ -823,7 +823,7 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
     netif_addr_idx_t i;
     /* outside local network? if so, this can neither be a global broadcast nor
        a subnet broadcast. */
-    if (!ip4_addr_netcmp(ipaddr, netif_ip4_addr(netif), netif_ip4_netmask(netif)) &&
+    if (!ip4_addr_net_eq(ipaddr, netif_ip4_addr(netif), netif_ip4_netmask(netif)) &&
         !ip4_addr_islinklocal(ipaddr)) {
 #if LWIP_AUTOIP
       struct ip_hdr *iphdr = LWIP_ALIGNMENT_CAST(struct ip_hdr *, q->payload);
@@ -863,7 +863,7 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
 #if ETHARP_TABLE_MATCH_NETIF
             (arp_table[etharp_cached_entry].netif == netif) &&
 #endif
-            (ip4_addr_cmp(dst_addr, &arp_table[etharp_cached_entry].ipaddr))) {
+            (ip4_addr_eq(dst_addr, &arp_table[etharp_cached_entry].ipaddr))) {
           /* the per-pcb-cached entry is stable and the right one! */
           ETHARP_STATS_INC(etharp.cachehit);
           return etharp_output_to_arp_index(netif, q, etharp_cached_entry);
@@ -880,7 +880,7 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
 #if ETHARP_TABLE_MATCH_NETIF
           (arp_table[i].netif == netif) &&
 #endif
-          (ip4_addr_cmp(dst_addr, &arp_table[i].ipaddr))) {
+          (ip4_addr_eq(dst_addr, &arp_table[i].ipaddr))) {
         /* found an existing, stable entry */
         ETHARP_SET_ADDRHINT(netif, i);
         return etharp_output_to_arp_index(netif, q, i);
@@ -1015,7 +1015,7 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
      * new PBUF_RAM. See the definition of PBUF_NEEDS_COPY for details. */
     p = q;
     while (p) {
-      LWIP_ASSERT("no packet queues allowed!", (p->len != p->tot_len) || (p->next == 0));
+      LWIP_ASSERT("no packet queues allowed!", (p->len != p->tot_len) || (p->next == NULL));
       if (PBUF_NEEDS_COPY(p)) {
         copy_needed = 1;
         break;
@@ -1039,7 +1039,7 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
       new_entry = (struct etharp_q_entry *)memp_malloc(MEMP_ARP_QUEUE);
       if (new_entry != NULL) {
         unsigned int qlen = 0;
-        new_entry->next = 0;
+        new_entry->next = NULL;
         new_entry->p = p;
         if (arp_table[i].q != NULL) {
           /* queue was already existent, append the new entry to the end */

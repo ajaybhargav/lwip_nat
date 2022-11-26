@@ -93,7 +93,7 @@ static void netconn_drain(struct netconn *conn);
 #endif /* LWIP_TCPIP_CORE_LOCKING */
 
 #if LWIP_NETCONN_FULLDUPLEX
-const u8_t netconn_deleted = 0;
+static const u8_t netconn_deleted = 0;
 
 int
 lwip_netconn_is_deallocated_msg(void *msg)
@@ -106,9 +106,9 @@ lwip_netconn_is_deallocated_msg(void *msg)
 #endif /* LWIP_NETCONN_FULLDUPLEX */
 
 #if LWIP_TCP
-const u8_t netconn_aborted = 0;
-const u8_t netconn_reset = 0;
-const u8_t netconn_closed = 0;
+static const u8_t netconn_aborted = 0;
+static const u8_t netconn_reset = 0;
+static const u8_t netconn_closed = 0;
 
 /** Translate an error to a unique void* passed via an mbox */
 static void *
@@ -1473,7 +1473,7 @@ lwip_netconn_do_listen(void *m)
           /* "Socket API like" dual-stack support: If IP to listen to is IP6_ADDR_ANY,
             * and NETCONN_FLAG_IPV6_V6ONLY is NOT set, use IP_ANY_TYPE to listen
             */
-          if (ip_addr_cmp(&msg->conn->pcb.ip->local_ip, IP6_ADDR_ANY) &&
+          if (ip_addr_eq(&msg->conn->pcb.ip->local_ip, IP6_ADDR_ANY) &&
               (netconn_get_ipv6only(msg->conn) == 0)) {
             /* change PCB type to IPADDR_TYPE_ANY */
             IP_SET_TYPE_VAL(msg->conn->pcb.tcp->local_ip,  IPADDR_TYPE_ANY);

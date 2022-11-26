@@ -406,7 +406,7 @@ icmp6_send_response_with_addrs_and_netif(struct pbuf *p, u8_t code, u32_t data, 
   icmp6hdr->data = lwip_htonl(data);
 
   /* copy fields from original packet */
-  pbuf_take_at(q, p->payload, datalen, sizeof(struct icmp6_hdr));
+  pbuf_copy_partial_pbuf(q, p, datalen, sizeof(struct icmp6_hdr));
 
   /* calculate checksum */
   icmp6hdr->chksum = 0;

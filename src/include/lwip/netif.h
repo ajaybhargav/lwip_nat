@@ -469,7 +469,7 @@ void netif_set_gw(struct netif *netif, const ip4_addr_t *gw);
 
 #define netif_set_flags(netif, set_flags)     do { (netif)->flags = (u8_t)((netif)->flags |  (set_flags)); } while(0)
 #define netif_clear_flags(netif, clr_flags)   do { (netif)->flags = (u8_t)((netif)->flags & (u8_t)(~(clr_flags) & 0xff)); } while(0)
-#define netif_is_flag_set(nefif, flag)        (((netif)->flags & (flag)) != 0)
+#define netif_is_flag_set(netif, flag)        (((netif)->flags & (flag)) != 0)
 
 void netif_set_up(struct netif *netif);
 void netif_set_down(struct netif *netif);
@@ -502,14 +502,18 @@ void netif_set_link_callback(struct netif *netif, netif_status_callback_fn link_
 #endif /* LWIP_NETIF_HOSTNAME */
 
 #if LWIP_IGMP
-/** @ingroup netif */
+/** @ingroup netif
+ * Set igmp mac filter function for a netif. */
 #define netif_set_igmp_mac_filter(netif, function) do { if((netif) != NULL) { (netif)->igmp_mac_filter = function; }}while(0)
+/** Get the igmp mac filter function for a netif. */
 #define netif_get_igmp_mac_filter(netif) (((netif) != NULL) ? ((netif)->igmp_mac_filter) : NULL)
 #endif /* LWIP_IGMP */
 
 #if LWIP_IPV6 && LWIP_IPV6_MLD
-/** @ingroup netif */
+/** @ingroup netif
+ * Set mld mac filter function for a netif. */
 #define netif_set_mld_mac_filter(netif, function) do { if((netif) != NULL) { (netif)->mld_mac_filter = function; }}while(0)
+/** Get the mld mac filter function for a netif. */
 #define netif_get_mld_mac_filter(netif) (((netif) != NULL) ? ((netif)->mld_mac_filter) : NULL)
 #define netif_mld_mac_filter(netif, addr, action) do { if((netif) && (netif)->mld_mac_filter) { (netif)->mld_mac_filter((netif), (addr), (action)); }}while(0)
 #endif /* LWIP_IPV6 && LWIP_IPV6_MLD */

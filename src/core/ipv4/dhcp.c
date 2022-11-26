@@ -160,11 +160,11 @@ enum dhcp_option_idx {
 
 /** Holds the decoded option values, only valid while in dhcp_recv.
     @todo: move this into struct dhcp? */
-u32_t dhcp_rx_options_val[DHCP_OPTION_IDX_MAX];
+static u32_t dhcp_rx_options_val[DHCP_OPTION_IDX_MAX];
 /** Holds a flag which option was received and is contained in dhcp_rx_options_val,
     only valid while in dhcp_recv.
     @todo: move this into struct dhcp? */
-u8_t  dhcp_rx_options_given[DHCP_OPTION_IDX_MAX];
+static u8_t  dhcp_rx_options_given[DHCP_OPTION_IDX_MAX];
 
 static u8_t dhcp_discover_request_options[] = {
   DHCP_OPTION_SUBNET_MASK,
@@ -307,6 +307,9 @@ dhcp_conflict_callback(struct netif *netif, acd_callback_enum_t state)
 {
   struct dhcp *dhcp = netif_dhcp_data(netif);
   u16_t msecs;
+
+  LWIP_ASSERT("DHCP should be enabled at this point, but it is not!",
+              (dhcp != NULL) && (dhcp->state != DHCP_STATE_OFF));
 
   switch (state) {
     case ACD_IP_OK:
@@ -673,9 +676,9 @@ dhcp_handle_ack(struct netif *netif, struct dhcp_msg *msg_in)
   if (dhcp_option_given(dhcp, DHCP_OPTION_IDX_SUBNET_MASK)) {
     /* remember given subnet mask */
     ip4_addr_set_u32(&dhcp->offered_sn_mask, lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_SUBNET_MASK)));
-    dhcp->subnet_mask_given = 1;
+    dhcp->flags |= DHCP_FLAG_SUBNET_MASK_GIVEN;
   } else {
-    dhcp->subnet_mask_given = 0;
+    dhcp->flags &= ~DHCP_FLAG_SUBNET_MASK_GIVEN;
   }
 
   /* gateway router */
@@ -719,6 +722,8 @@ dhcp_set_struct(struct netif *netif, struct dhcp *dhcp)
 
   /* clear data structure */
   memset(dhcp, 0, sizeof(struct dhcp));
+  /* mark this as externally allocated */
+  dhcp->flags |= DHCP_FLAG_EXTERNAL_MEM;
   /* dhcp_set_state(&dhcp, DHCP_STATE_OFF); */
   netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, dhcp);
 }
@@ -734,11 +739,15 @@ dhcp_set_struct(struct netif *netif, struct dhcp *dhcp)
  */
 void dhcp_cleanup(struct netif *netif)
 {
+  struct dhcp *dhcp;
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("netif != NULL", netif != NULL);
 
-  if (netif_dhcp_data(netif) != NULL) {
-    mem_free(netif_dhcp_data(netif));
+  dhcp = netif_dhcp_data(netif);
+  if (dhcp != NULL) {
+    if (!(dhcp->flags & DHCP_FLAG_EXTERNAL_MEM)) {
+      mem_free(dhcp);
+    }
     netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, NULL);
   }
 }
@@ -785,7 +794,7 @@ dhcp_start(struct netif *netif)
 
     /* store this dhcp client in the netif */
     netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, dhcp);
-    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): allocated dhcp"));
+    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): allocated dhcp\n"));
     /* already has DHCP client attached */
   } else {
     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_start(): restarting DHCP configuration\n"));
@@ -1088,7 +1097,7 @@ dhcp_bind(struct netif *netif)
     dhcp->t1_timeout = 0;
   }
 
-  if (dhcp->subnet_mask_given) {
+  if (dhcp->flags & DHCP_FLAG_SUBNET_MASK_GIVEN) {
     /* copy offered network mask */
     ip4_addr_copy(sn_mask, dhcp->offered_sn_mask);
   } else {
@@ -1104,13 +1113,6 @@ dhcp_bind(struct netif *netif)
   }
 
   ip4_addr_copy(gw_addr, dhcp->offered_gw_addr);
-  /* gateway address not given? */
-  if (ip4_addr_isany_val(gw_addr)) {
-    /* copy network address */
-    ip4_addr_get_network(&gw_addr, &dhcp->offered_ip_addr, &sn_mask);
-    /* use first host address on network as gateway */
-    ip4_addr_set_u32(&gw_addr, ip4_addr_get_u32(&gw_addr) | PP_HTONL(0x00000001UL));
-  }
 
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_STATE, ("dhcp_bind(): IP: 0x%08"X32_F" SN: 0x%08"X32_F" GW: 0x%08"X32_F"\n",
               ip4_addr_get_u32(&dhcp->offered_ip_addr), ip4_addr_get_u32(&sn_mask), ip4_addr_get_u32(&gw_addr)));
@@ -1331,6 +1333,7 @@ dhcp_release_and_stop(struct netif *netif)
     /* create and initialize the DHCP message header */
     struct pbuf *p_out;
     u16_t options_out_len;
+    dhcp_set_state(dhcp, DHCP_STATE_OFF);
     p_out = dhcp_create_msg(netif, dhcp, DHCP_RELEASE, &options_out_len);
     if (p_out != NULL) {
       struct dhcp_msg *msg_out = (struct dhcp_msg *)p_out->payload;
@@ -1350,9 +1353,14 @@ dhcp_release_and_stop(struct netif *netif)
 
     /* remove IP address from interface (prevents routing from selecting this interface) */
     netif_set_addr(netif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4);
+  } else {
+     dhcp_set_state(dhcp, DHCP_STATE_OFF);
   }
 
-  dhcp_set_state(dhcp, DHCP_STATE_OFF);
+#if LWIP_DHCP_DOES_ACD_CHECK
+  /* stop acd because we may be in checking state and the callback would trigger a bind */
+  acd_remove(netif, &dhcp->acd);
+#endif
 
   if (dhcp->pcb_allocated != 0) {
     dhcp_dec_pcb_refcount(); /* free DHCP PCB if not needed any more */

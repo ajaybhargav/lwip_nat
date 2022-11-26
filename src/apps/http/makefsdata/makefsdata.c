@@ -21,16 +21,25 @@
 
 /** Makefsdata can generate *all* files deflate-compressed (where file size shrinks).
  * Since nearly all browsers support this, this is a good way to reduce ROM size.
- * To compress the files, "miniz.c" must be downloaded separately.
+ * To compress the files, "miniz.c" must be downloaded separately OR
+ * MAKEFS_SUPPORT_DEFLATE_ZLIB must be set and the zlib library and headers
+ * must be present on the system compiling this program.
  */
 #ifndef MAKEFS_SUPPORT_DEFLATE
 #define MAKEFS_SUPPORT_DEFLATE 0
-#endif
+#ifndef MAKEFS_SUPPORT_DEFLATE_ZLIB
+#define MAKEFS_SUPPORT_DEFLATE_ZLIB 0
+#endif /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
+#endif /* MAKEFS_SUPPORT_DEFLATE */
 
 #define COPY_BUFSIZE (1024*1024) /* 1 MByte */
 
 #if MAKEFS_SUPPORT_DEFLATE
+#if MAKEFS_SUPPORT_DEFLATE_ZLIB
+#include <zlib.h>
+#else
 #include "../miniz.c"
+#endif /* MAKEFS_SUPPORT_DEFLATE */
 
 typedef unsigned char uint8;
 typedef unsigned short uint16;
@@ -49,9 +58,11 @@ typedef unsigned int uint;
 static uint8 s_outbuf[OUT_BUF_SIZE];
 static uint8 s_checkbuf[OUT_BUF_SIZE];
 
+#ifndef MAKEFS_SUPPORT_DEFLATE_ZLIB
 /* tdefl_compressor contains all the state needed by the low-level compressor so it's a pretty big struct (~300k).
    This example makes it a global vs. putting it on the stack, of course in real-world usage you'll probably malloc() or new it. */
 tdefl_compressor g_deflator;
+#endif /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
 
 static int deflate_level; /* default compression level, can be changed via command line */
 #define USAGE_ARG_DEFLATE " [-defl<:compr_level>]"
@@ -97,8 +108,8 @@ static int deflate_level; /* default compression level, can be changed via comma
 #include "../core/def.c"
 
 /** (Your server name here) */
-const char *serverID = "Server: "HTTPD_SERVER_AGENT"\r\n";
-char serverIDBuffer[1024];
+static const char *serverID = "Server: "HTTPD_SERVER_AGENT"\r\n";
+static char serverIDBuffer[1024];
 
 /* change this to suit your MEM_ALIGNMENT */
 #define PAYLOAD_ALIGNMENT 4
@@ -133,26 +144,26 @@ static int file_can_be_compressed(const char* filename);
 /* 5 bytes per char + 3 bytes per line */
 static char file_buffer_c[COPY_BUFSIZE * 5 + ((COPY_BUFSIZE / HEX_BYTES_PER_LINE) * 3)];
 
-char curSubdir[MAX_PATH_LEN-3];
-char lastFileVar[MAX_PATH_LEN];
-char hdr_buf[4096];
+static char curSubdir[MAX_PATH_LEN-3];
+static char lastFileVar[MAX_PATH_LEN];
+static char hdr_buf[4096];
 
-unsigned char processSubs = 1;
-unsigned char includeHttpHeader = 1;
-unsigned char useHttp11 = 0;
-unsigned char supportSsi = 1;
-unsigned char precalcChksum = 0;
-unsigned char includeLastModified = 0;
+static unsigned char processSubs = 1;
+static unsigned char includeHttpHeader = 1;
+static unsigned char useHttp11 = 0;
+static unsigned char supportSsi = 1;
+static unsigned char precalcChksum = 0;
+static unsigned char includeLastModified = 0;
 #if MAKEFS_SUPPORT_DEFLATE
-unsigned char deflateNonSsiFiles = 0;
-size_t deflatedBytesReduced = 0;
-size_t overallDataBytes = 0;
+static unsigned char deflateNonSsiFiles = 0;
+static size_t deflatedBytesReduced = 0;
+static size_t overallDataBytes = 0;
 #endif
-const char *exclude_list = NULL;
-const char *ncompress_list = NULL;
+static const char *exclude_list = NULL;
+static const char *ncompress_list = NULL;
 
-struct file_entry *first_file = NULL;
-struct file_entry *last_file = NULL;
+static struct file_entry *first_file = NULL;
+static struct file_entry *last_file = NULL;
 
 static char *ssi_file_buffer;
 static char **ssi_file_lines;
@@ -195,7 +206,7 @@ int main(int argc, char *argv[])
   memset(path, 0, sizeof(path));
   memset(appPath, 0, sizeof(appPath));
 
-  printf(NEWLINE " makefsdata - HTML to C source converter" NEWLINE);
+  printf(NEWLINE " makefsdata v" LWIP_VERSION_STRING " - HTML to C source converter" NEWLINE);
   printf("     by Jim Pettinato               - circa 2003 " NEWLINE);
   printf("     extended by Simon Goldschmidt  - 2009 " NEWLINE NEWLINE);
 
@@ -587,11 +598,17 @@ static u8_t *get_file_data(const char *filename, int *file_size, int can_be_comp
     if (can_be_compressed) {
       if (fsize < OUT_BUF_SIZE) {
         u8_t *ret_buf;
+#ifndef MAKEFS_SUPPORT_DEFLATE_ZLIB
         tdefl_status status;
+#else /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
+        int status;
+#endif /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
         size_t in_bytes = fsize;
         size_t out_bytes = OUT_BUF_SIZE;
         const void *next_in = buf;
         void *next_out = s_outbuf;
+        memset(s_outbuf, 0, sizeof(s_outbuf));
+#ifndef MAKEFS_SUPPORT_DEFLATE_ZLIB
         /* create tdefl() compatible flags (we have to compose the low-level flags ourselves, or use tdefl_create_comp_flags_from_zip_params() but that means MINIZ_NO_ZLIB_APIS can't be defined). */
         mz_uint comp_flags = s_tdefl_num_probes[MZ_MIN(10, deflate_level)] | ((deflate_level <= 3) ? TDEFL_GREEDY_PARSING_FLAG : 0);
         if (!deflate_level) {
@@ -602,12 +619,18 @@ static u8_t *get_file_data(const char *filename, int *file_size, int can_be_comp
           printf("tdefl_init() failed!\n");
           exit(-1);
         }
-        memset(s_outbuf, 0, sizeof(s_outbuf));
         status = tdefl_compress(&g_deflator, next_in, &in_bytes, next_out, &out_bytes, TDEFL_FINISH);
         if (status != TDEFL_STATUS_DONE) {
           printf("deflate failed: %d\n", status);
           exit(-1);
         }
+#else /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
+        status = compress2(next_out, &out_bytes, next_in, in_bytes, deflate_level);
+        if (status != Z_OK) {
+          printf("deflate failed: %d\n", status);
+          exit(-1);
+        }
+#endif /*  MAKEFS_SUPPORT_DEFLATE_ZLIB */
         LWIP_ASSERT("out_bytes <= COPY_BUFSIZE", out_bytes <= OUT_BUF_SIZE);
         if (out_bytes < fsize) {
           ret_buf = (u8_t *)malloc(out_bytes);
@@ -615,16 +638,22 @@ static u8_t *get_file_data(const char *filename, int *file_size, int can_be_comp
           memcpy(ret_buf, s_outbuf, out_bytes);
           {
             /* sanity-check compression be inflating and comparing to the original */
-            tinfl_status dec_status;
-            tinfl_decompressor inflator;
             size_t dec_in_bytes = out_bytes;
             size_t dec_out_bytes = OUT_BUF_SIZE;
             next_out = s_checkbuf;
+            memset(s_checkbuf, 0, sizeof(s_checkbuf));
+#ifndef MAKEFS_SUPPORT_DEFLATE_ZLIB
+            tinfl_status dec_status;
+            tinfl_decompressor inflator;
 
             tinfl_init(&inflator);
-            memset(s_checkbuf, 0, sizeof(s_checkbuf));
             dec_status = tinfl_decompress(&inflator, (const mz_uint8 *)ret_buf, &dec_in_bytes, s_checkbuf, (mz_uint8 *)next_out, &dec_out_bytes, 0);
             LWIP_ASSERT("tinfl_decompress failed", dec_status == TINFL_STATUS_DONE);
+#else /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
+            int dec_status;
+            dec_status = uncompress2 (s_checkbuf, &dec_out_bytes, ret_buf, &dec_in_bytes);
+            LWIP_ASSERT("tinfl_decompress failed", dec_status == Z_OK);
+#endif /* MAKEFS_SUPPORT_DEFLATE_ZLIB */
             LWIP_ASSERT("tinfl_decompress size mismatch", fsize == dec_out_bytes);
             LWIP_ASSERT("decompressed memcmp failed", !memcmp(s_checkbuf, buf, fsize));
           }
